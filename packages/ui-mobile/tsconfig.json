@@ -1,0 +1,5 @@
+{
+  "extends": "../config/tsconfig/expo.json",
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}
