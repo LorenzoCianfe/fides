@@ -1,0 +1,16 @@
+title = "Fides gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Local development placeholders — not real secrets"
+paths = [
+  '''\.env\.example''',
+  '''infra/docker/docker-compose\.yml''',
+]
+regexes = [
+  '''fides_local_dev''',
+  '''fides_minio''',
+  '''fides_minio_local_dev''',
+]
