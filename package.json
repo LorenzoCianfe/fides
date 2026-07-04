@@ -1,0 +1,40 @@
+{
+  "name": "fides",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fides — simulated-core EU neobank (modular monolith monorepo)",
+  "packageManager": "pnpm@9.12.3",
+  "engines": {
+    "node": ">=22 <23",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,yml,yaml}\"",
+    "stack:up": "docker compose -f infra/docker/docker-compose.yml up -d",
+    "stack:down": "docker compose -f infra/docker/docker-compose.yml down",
+    "stack:logs": "docker compose -f infra/docker/docker-compose.yml logs -f",
+    "prepare": "husky || true"
+  },
+  "devDependencies": {
+    "@fides/config": "workspace:*",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.11",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,mjs,cjs}": [
+      "prettier --write"
+    ],
+    "*.{json,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}

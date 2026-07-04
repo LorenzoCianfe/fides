@@ -1,0 +1,16 @@
+node_modules
+dist
+build
+.next
+.turbo
+.expo
+out
+coverage
+pnpm-lock.yaml
+# Hand-authored formal docs keep their own formatting
+documentation.md
+roadmap.md
+design.md
+security.md
+CHANGELOG.md
+docs/adr
