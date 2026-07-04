@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Fides Expo",
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "ESNext"],
+    "jsx": "react-native",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "allowJs": true,
+    "verbatimModuleSyntax": false
+  }
+}
