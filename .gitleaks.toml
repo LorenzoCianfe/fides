@@ -8,6 +8,7 @@ description = "Local development placeholders — not real secrets"
 paths = [
   '''\.env\.example''',
   '''infra/docker/docker-compose\.yml''',
+  '''pnpm-lock\.yaml''',
 ]
 regexes = [
   '''fides_local_dev''',

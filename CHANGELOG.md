@@ -18,3 +18,9 @@ All notable changes to this project are documented here. The format is based on
 - Local stack: Docker Compose for Postgres, Redis, and MinIO, booting via `pnpm stack:up`.
 - CI: GitHub Actions (lint, typecheck, test, build) with dependency audit, gitleaks secret scanning, and CodeQL SAST; Dependabot; a husky pre-commit hook.
 - Architecture Decision Records ADR-0001 through ADR-0018.
+
+### Security
+
+- Upgraded `drizzle-orm` to >= 0.45.2 to resolve a SQL-injection advisory (GHSA-gpj5-g38j-94v9) in the ledger ORM.
+- Pinned patched transitive dependencies via pnpm overrides: `multer` >= 2.1.0 (DoS) and `glob` >= 10.5.0 (CLI command injection).
+- CI secret scanning runs gitleaks against the working tree for deterministic results; one unfixable transitive advisory (lodash `_.template`, no published fix) is explicitly ignored with justification.
