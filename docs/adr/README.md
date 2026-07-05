@@ -22,3 +22,4 @@ Each ADR captures one significant decision, its context, and its consequences. A
 | [0016](0016-design-language-tokens.md) | Minimal, trustworthy design language; shared tokens | Accepted |
 | [0017](0017-orm-drizzle.md) | ORM selection: Drizzle | Accepted |
 | [0018](0018-money-representation-rounding.md) | Money representation and rounding policy | Accepted |
+| [0019](0019-synchronous-balance-projection.md) | Synchronous in-transaction balance projection (refines 0005) | Accepted |

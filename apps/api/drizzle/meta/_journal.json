@@ -8,6 +8,20 @@
       "when": 1783183748550,
       "tag": "0000_dark_invaders",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783271988074,
+      "tag": "0001_ledger_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783272023197,
+      "tag": "0002_ledger_append_only",
+      "breakpoints": true
     }
   ]
 }

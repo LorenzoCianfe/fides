@@ -5,10 +5,10 @@
 | Field | Value |
 |---|---|
 | Document | Master platform documentation |
-| Version | 0.2.0 |
-| Status | Phase 0 (Foundations) — in progress |
+| Version | 0.3.0 |
+| Status | Phase 1 (Walking skeleton) — in progress |
 | Scope | Simulated-core EU neobank (iOS, Android, web) + admin back office |
-| Last updated | 2026-07-04 |
+| Last updated | 2026-07-05 |
 
 ---
 
@@ -202,6 +202,7 @@ ADRs are maintained under `docs/adr/` (see the [index](docs/adr/README.md)). The
 | 0016 | Minimal, trustworthy design language; shared tokens | Accepted |
 | 0017 | ORM selection: Drizzle | Accepted |
 | 0018 | Money representation and rounding policy | Accepted |
+| 0019 | Synchronous in-transaction balance projection (refines 0005) | Accepted |
 
 ## 9. Versioning and change log
 
@@ -211,6 +212,7 @@ The platform follows semantic versioning. This document's version tracks documen
 |---|---|---|
 | 0.1.0 | 2026-07-04 | Initial documentation from discovery; scope, architecture, stack, and ADR index established. |
 | 0.2.0 | 2026-07-04 | Phase 0 foundations implemented. ADR-0017 resolved (Drizzle); ADR-0018 added (money/rounding). Stack finalized: Vitest, Zod-first OpenAPI. ADRs 0001–0018 written; CHANGELOG initiated. |
+| 0.3.0 | 2026-07-05 | Phase 1 ledger persistence: double-entry schema, append-only triggers, transactional posting service with idempotency and outbox, and a synchronously-maintained balance projection. ADR-0019 added (balance projection strategy). |
 
 ## 10. Glossary
 

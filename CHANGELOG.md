@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Phase 1 — Walking skeleton (in progress).** Ledger domain core: account taxonomy with normal-balance rules, positive-amount postings, and a balanced-by-construction `JournalEntry` builder (debits equal credits per currency), covered by example and property-based (`fast-check`) invariant tests.
+- Ledger persistence: `ledger_accounts`, `journal_entries`, `postings`, a synchronously-maintained `balances` projection (ADR-0019), and a per-actor `idempotency_keys` table. A migration installs database triggers that forbid UPDATE/DELETE on the append-only ledger tables.
+- Transactional posting service: posts a balanced entry, updates the balance projection under a deterministic row lock, enforces non-negative wallet balances, claims the idempotency key, and enqueues a `ledger.entry.posted` outbox event — all in one transaction. Read-side reconciliation (projection equals the sum of postings) and a whole-ledger zero-sum check.
+- Testcontainers-backed integration tests running under `pnpm test` against an ephemeral Postgres with the committed migrations applied.
+
 - **Phase 0 — Foundations.** Monorepo scaffolding (pnpm workspaces + Turborepo), strict TypeScript, ESLint (flat config) + Prettier, and a shared `@fides/config` package.
 - Shared kernel `@fides/domain`: currency-safe `Money` value object (integer minor units, float-free rounding), currency registry, typed error taxonomy, and event/outbox primitives — unit-tested with Vitest (53 tests).
 - `@fides/contracts`: Zod-first schemas as the single source of truth, with `zod-to-openapi` document generation.
