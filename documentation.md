@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document | Master platform documentation |
-| Version | 0.3.0 |
+| Version | 0.4.0 |
 | Status | Phase 1 (Walking skeleton) — in progress |
 | Scope | Simulated-core EU neobank (iOS, Android, web) + admin back office |
 | Last updated | 2026-07-05 |
@@ -14,7 +14,7 @@
 
 ## 1. Purpose
 
-This document is the primary, evolving record of the platform. It tracks architecture decisions, implemented features, technical rationale, and the system's evolution across versions. It is maintained as code (in-repository, updated per change) and is authoritative for how the system is structured. Companion documents: [roadmap.md](roadmap.md), [design.md](design.md), [security.md](security.md).
+This document is the primary, evolving record of the platform. It tracks architecture decisions, implemented features, technical rationale, and the system's evolution across versions. It is maintained as code (in-repository, updated per change) and is authoritative for how the system is structured. Companion documents: [roadmap.md](roadmap.md), [design.md](design.md), [security.md](security.md). Phase 1 build progress and the session-to-session continuation state are tracked in [docs/phase-1-handoff.md](docs/phase-1-handoff.md).
 
 ## 2. Product overview
 
@@ -213,6 +213,7 @@ The platform follows semantic versioning. This document's version tracks documen
 | 0.1.0 | 2026-07-04 | Initial documentation from discovery; scope, architecture, stack, and ADR index established. |
 | 0.2.0 | 2026-07-04 | Phase 0 foundations implemented. ADR-0017 resolved (Drizzle); ADR-0018 added (money/rounding). Stack finalized: Vitest, Zod-first OpenAPI. ADRs 0001–0018 written; CHANGELOG initiated. |
 | 0.3.0 | 2026-07-05 | Phase 1 ledger persistence: double-entry schema, append-only triggers, transactional posting service with idempotency and outbox, and a synchronously-maintained balance projection. ADR-0019 added (balance projection strategy). |
+| 0.4.0 | 2026-07-05 | Phase 1 progress: async transaction-history projection via the outbox dispatcher (Slice 2 complete); identity onboarding foundation (Slice 3 Wave A) — registration, email verification, and a mock KYC pipeline. Continuation state captured in [docs/phase-1-handoff.md](docs/phase-1-handoff.md). |
 
 ## 10. Glossary
 
