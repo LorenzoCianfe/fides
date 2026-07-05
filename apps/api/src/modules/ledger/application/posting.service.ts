@@ -17,9 +17,7 @@ import {
 import { appendToOutbox } from '../../../shared/outbox/outbox.writer';
 import { balanceEffectMinor, type AccountType, type JournalEntry } from '../domain';
 import { balances, journalEntries, ledgerAccounts, postings } from '../infra/ledger.schema';
-
-/** Ledger event type emitted when an entry is posted. */
-export const LEDGER_ENTRY_POSTED = 'ledger.entry.posted';
+import { LEDGER_ENTRY_POSTED, type LedgerEntryPostedPayload } from './ledger-events';
 
 export interface PostEntryCommand {
   /** A pre-built, balanced journal entry. */
@@ -171,21 +169,30 @@ export class PostingService {
         });
       }
 
+      const payload: LedgerEntryPostedPayload = {
+        entryId: entry.id,
+        entryType: entry.type,
+        occurredAt: entry.occurredAt.toISOString(),
+        accounts: resultBalances.map((balance) => ({
+          accountId: balance.accountId,
+          currency: balance.currency,
+          amountMinor: (effectByAccount.get(balance.accountId) ?? 0n).toString(),
+          balanceAfterMinor: balance.balanceMinor,
+        })),
+        postings: entry.postings.map((posting) => ({
+          accountId: posting.accountId,
+          direction: posting.direction,
+          amount: posting.amount.amount.toString(),
+          currency: posting.amount.currency,
+        })),
+      };
+
       const event = createDomainEvent(
         {
           type: LEDGER_ENTRY_POSTED,
           aggregateType: 'journal_entry',
           aggregateId: entry.id,
-          payload: {
-            entryId: entry.id,
-            entryType: entry.type,
-            postings: entry.postings.map((posting) => ({
-              accountId: posting.accountId,
-              direction: posting.direction,
-              amount: posting.amount.amount.toString(),
-              currency: posting.amount.currency,
-            })),
-          },
+          payload,
           ...(entry.correlationId !== undefined ? { correlationId: entry.correlationId } : {}),
         },
         { ids: this.ids, clock: this.clock },

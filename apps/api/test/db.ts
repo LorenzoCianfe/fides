@@ -21,6 +21,6 @@ export function createTestDb(): TestDbHandle {
 /** Truncate all tables between tests (append-only triggers do not block TRUNCATE). */
 export async function resetDb(db: TestDatabase): Promise<void> {
   await db.execute(
-    sql`TRUNCATE TABLE postings, journal_entries, balances, ledger_accounts, idempotency_keys, outbox RESTART IDENTITY CASCADE`,
+    sql`TRUNCATE TABLE transaction_history, postings, journal_entries, balances, ledger_accounts, idempotency_keys, outbox RESTART IDENTITY CASCADE`,
   );
 }
