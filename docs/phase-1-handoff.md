@@ -3,17 +3,17 @@
 | Field | Value |
 |---|---|
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) |
-| Branch | `phase-1-walking-skeleton` — 4 commits ahead of `main`, not yet PR'd (single PR at phase end) |
-| Verified | `apps/api` 30/30 tests green; lint, typecheck, and production build clean |
-| Last updated | 2026-07-05 |
+| Branch | `phase-1-walking-skeleton` — not yet PR'd (single PR at phase end) |
+| Verified | `apps/api` 60/60 tests green; lint, typecheck, and production build clean |
+| Last updated | 2026-07-06 |
 
-> Resume point: **Slice 3, Wave B** (WebAuthn relying party + server-side sessions). Read §4 (locked decisions) before writing code — several constraints are not yet expressed in the codebase.
+> Resume point: **Slice 3, Wave C** (NestJS HTTP surface + SCA seam). Read §4 (locked decisions) before writing code — the remaining constraints (`/v1` prefix, correlation IDs, SCA dynamic linking) are not yet expressed in the codebase. Ceremony/session policy is pinned in ADR-0020.
 
 ---
 
 ## 1. One-paragraph orientation
 
-Phase 1 is built **backend-first** ("API + tests first, clients after"). The double-entry **ledger** (Slices 1–2) and the **identity onboarding foundation** (Slice 3 Wave A) are complete and covered by integration tests that run against a real Postgres via Testcontainers. All work lives in `apps/api`. `pnpm test` requires a running Docker daemon. Continue at Slice 3 Wave B; §5 has the concrete next steps.
+Phase 1 is built **backend-first** ("API + tests first, clients after"). The double-entry **ledger** (Slices 1–2), the **identity onboarding foundation** (Slice 3 Wave A), and the **WebAuthn relying party + server-side sessions** (Slice 3 Wave B, policy in ADR-0020) are complete and covered by integration tests that run against a real Postgres via Testcontainers — the WebAuthn ceremonies are exercised end to end by a software authenticator producing real attestations and assertions. All work lives in `apps/api`; everything is still headless (no HTTP layer). `pnpm test` requires a running Docker daemon. Continue at Slice 3 Wave C; §5 has the concrete next steps.
 
 ## 2. Status by slice
 
@@ -21,7 +21,7 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 |---|---|---|---|
 | 1 | Ledger domain core | Done | `c7b3379` |
 | 2 | Ledger persistence + async projection | Done | `4872171`, `3a05853` |
-| 3 | Identity, WebAuthn, sessions | **Wave A done**; Wave B + C remaining | `0a274b8` |
+| 3 | Identity, WebAuthn, sessions | **Waves A + B done**; Wave C remaining | `0a274b8`, `ea42e01` |
 | 4 | Accounts & wallets | Not started | — |
 | 5 | P2P transfer + dev funding | Not started | — |
 | 6 | Audit trail (hash-chained) | Not started | — |
@@ -40,8 +40,17 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 **Identity** (`apps/api/src/modules/identity`), **KYC** (`apps/api/src/modules/kyc`)
 - `identity/infra/identity.schema.ts` — `users` (unique lower-cased email, `onboarding|active|suspended`, natural-person fields), `email_verifications` (SHA-256 code hash).
 - `identity/application/registration.service.ts` — creates user + verification code (via `NotificationPort`) + KYC application, submits to `KycPort`, applies the decision, emits `kyc.approved` for downstream provisioning.
-- `identity/application/email-verification.service.ts` — verifies the code, sets `email_verified_at`.
+- `identity/application/email-verification.service.ts` — verifies the code, sets `email_verified_at`, and issues the one-time **enrolment token** gating the first passkey.
 - `kyc/application/kyc.port.ts` + `kyc/infra/mock-kyc.adapter.ts` — port + dev auto-approve adapter. `kyc/infra/kyc.schema.ts` — `kyc_applications`.
+
+**Identity auth — Wave B** (`apps/api/src/modules/identity`, policy in ADR-0020)
+- `infra/auth.schema.ts` — `credentials` (passkeys: base64url id/COSE key, counter, deviceType/backedUp), `sessions` (hashed opaque access+refresh, previous refresh hash for reuse detection, idle/absolute deadlines, revocation), `devices` (client-declared, unique per user+name+platform), `webauthn_challenges` (hashed, single-use, typed, nullable user for decoys), `enrolment_tokens` (hashed, single-use).
+- `application/webauthn.service.ts` (`WebAuthnService`) — registration + email-first authentication ceremonies over `@simplewebauthn/server` v13: UV **required**, attestation `none`, ES256/RS256, `residentKey: preferred`, excludeCredentials on re-registration, counter-regression rejection, decoy options for unknown emails, challenge consumed atomically regardless of outcome. First passkey consumes the enrolment token and **auto-issues a session**; additional passkeys require `authenticatedUserId`.
+- `application/session.service.ts` (`SessionService`) — `issueSession` (device match-or-create; runs on the caller's executor), `validateAccessToken` (session⋈user single query: revocation, expiries, suspended cut-off; throttled `lastUsedAt`), `refresh` (rotation with reuse detection — the revocation commits before the error is raised), `revokeSession` (idempotent, ownership-scoped). TTLs 15 m / 30 d idle / 90 d absolute via `SessionConfig` (env `SESSION_*_TTL_MS`).
+- `application/enrolment-token.ts` — issue/validate/consume helpers (15-min TTL); `application/auth.guard.ts` (`SessionAuthGuard`, `extractBearerToken`) and `application/authorization.ts` (`assertResourceOwnership`) — headless, wired to HTTP in Wave C.
+- `shared/crypto/secrets.ts` — added `generateToken` (prefixed 256-bit base64url; only SHA-256 stored).
+- Env additions: `WEBAUTHN_RP_ID` (default `localhost`), `WEBAUTHN_ORIGINS` (comma-separated; default `http://localhost:3001`), optional `SESSION_*_TTL_MS`.
+- Tests: `auth.integration.test.ts` (18 scenarios: enrolment gating, replay/expiry/origin/RP-ID/UV failures, additional passkey, decoys, counter regression, suspension, rotation, reuse-revocation, idle/absolute expiry, ownership-scoped revocation) driven by `test/webauthn.ts` — a software P-256 authenticator emitting real CBOR/ECDSA payloads; `auth.guard.test.ts` unit tests; `test/clock.ts` (`TestClock`) for deterministic TTLs.
 
 **Shared** (`apps/api/src/shared`)
 - `ids/uuid-v7.ts` (`UuidV7Generator`), `time/system-clock.ts` (`SystemClock`).
@@ -59,8 +68,8 @@ Pivotal choices made this session. Those not yet in code must be honored when im
 | Area | Decision | Where |
 |---|---|---|
 | Auth realism | **Full passkeys on web AND mobile** (native mobile passkeys need a custom Expo dev build, not Expo Go) | Slice 3/8 |
-| Sessions | **Server-side sessions** (Postgres) with immediate revocation | Slice 3 Wave B |
-| Access token | **Opaque token, validated against the session row on every request** (not JWT); rotating **hashed** refresh | Slice 3 Wave B |
+| Sessions | **Server-side sessions** (Postgres) with immediate revocation | Done (Wave B, ADR-0020) |
+| Access token | **Opaque token, validated against the session row on every request** (not JWT); rotating **hashed** refresh with reuse detection | Done (Wave B, ADR-0020) |
 | Email verification | **Real code flow**, delivered via the console `NotificationPort` in dev | Done (Wave A) |
 | SCA step-up | **Fresh WebAuthn assertion with dynamic linking** (challenge bound to amount + payee) | Slice 3 Wave C / Slice 5 |
 | Admin | **Full RBAC + MFA + four-eyes built now** (even though Phase 1 admin is read-only) | Slice 7 |
@@ -75,18 +84,11 @@ Adopted technical defaults (delegated): UUID v7 ids; `BIGINT` per-posting minor 
 
 ## 5. Next steps
 
-### Slice 3 — Wave B (WebAuthn + sessions)
-1. Add dependency `@simplewebauthn/server` to `apps/api`.
-2. Schema: `credentials` (id, userId, credentialId unique, publicKey, counter, transports, deviceName, createdAt), `sessions` (id, userId, deviceId, accessTokenHash, refreshTokenHash, createdAt, expiresAt, lastUsedAt, revokedAt), `devices` (id, userId, name, platform, createdAt). Add to the schema barrel + `resetDb` TRUNCATE list; `drizzle-kit generate`.
-3. WebAuthn RP service: registration ceremony (`generateRegistrationOptions` / `verifyRegistrationResponse`) and authentication ceremony (`generateAuthenticationOptions` / `verifyAuthenticationResponse`). Make RP ID / expected origin env-configurable (dev web = `localhost`); store the challenge server-side (short-lived) between option issue and verification.
-4. Session service: issue an **opaque** access token (random, stored hashed on the session) + rotating hashed refresh; a `validateAccessToken` that reads the session row and rejects revoked/expired; `revokeSession`.
-5. Auth guard + resource-ownership authorization helper.
-6. Tests with a virtual authenticator (`@simplewebauthn/server` supports supplying verification inputs) covering register → login → refresh → revoke and ownership checks.
-
 ### Slice 3 — Wave C (API surface + SCA)
-- NestJS wiring: `/v1` prefix, correlation-id middleware, DI providers for `DRIZZLE`/ids/clock/ports, module registration (identity, kyc, ledger). HTTP endpoints: register, verify-email, WebAuthn option/verify (register + auth), login, refresh, logout. Zod contracts in `packages/contracts` + OpenAPI at `/docs`.
-- SCA step-up seam: a challenge bound to the action (dynamic linking), verified by a fresh WebAuthn assertion; enforce on the transfer in Slice 5.
-- Basic rate limiting on auth endpoints. Schedule the `OutboxDispatcher` in the running app (e.g. `@nestjs/schedule` interval) — it is currently only invoked directly in tests.
+- NestJS wiring: `/v1` prefix, correlation-id middleware, DI providers for `DRIZZLE`/ids/clock/ports (including `SessionConfig`/`WebAuthnConfig` from env), module registration (identity, kyc, ledger). HTTP endpoints: register, verify-email, WebAuthn option/verify (register + auth), login, refresh, logout, session list/revoke. Zod contracts in `packages/contracts` + OpenAPI at `/docs`. Wire `SessionAuthGuard` (built in Wave B) into the protected routes.
+- A **re-issue path for the enrolment token** (resend verification flow) for users whose token expires before the first passkey is enrolled — the Wave B services deliberately have no such backdoor.
+- SCA step-up seam: a challenge bound to the action (dynamic linking), verified by a fresh WebAuthn assertion; enforce on the transfer in Slice 5. Reuse the `webauthn_challenges` machinery (new ceremony type or an action-hash column).
+- Basic rate limiting on auth endpoints. Schedule the `OutboxDispatcher` in the running app (e.g. `@nestjs/schedule` interval) — it is currently only invoked directly in tests. `@nestjs/schedule` is not yet a dependency (`@simplewebauthn/server` now is).
 
 ### Slices 4–8 (per `roadmap.md`)
 - **4 Accounts/wallets:** consume `kyc.approved` → provision one EUR account + wallet + backing ledger account (`wallet:<walletId>`, liability) via `LedgerStore.createAccount`.
@@ -109,7 +111,7 @@ Adopted technical defaults (delegated): UUID v7 ids; `BIGINT` per-posting minor 
 
 ```bash
 # with Docker running:
-corepack pnpm --filter @fides/api test        # 30 tests (Testcontainers Postgres)
+corepack pnpm --filter @fides/api test        # 60 tests (Testcontainers Postgres)
 corepack pnpm --filter @fides/api typecheck
 corepack pnpm --filter @fides/api lint
 corepack pnpm --filter @fides/api build
@@ -117,7 +119,9 @@ corepack pnpm --filter @fides/api build
 
 ## 8. Known gaps / watch-items
 
-- No NestJS HTTP wiring yet — identity/ledger services are headless (exercised directly by integration tests). Controllers, DI modules, `/v1`, and OpenAPI routes arrive in Slice 3 Wave C.
-- The `OutboxDispatcher` is not scheduled in the running app yet (tests call `dispatchPending()` directly). Add a scheduler in Wave C.
-- `@nestjs/schedule` and `@simplewebauthn/server` are not yet dependencies.
-- Redis is defined in the local stack but not yet used (idempotency + sessions are Postgres-backed for now; a Redis fast-path is a later optimization).
+- No NestJS HTTP wiring yet — identity/ledger services are headless (exercised directly by integration tests). Controllers, DI modules, `/v1`, and OpenAPI routes arrive in Slice 3 Wave C. `SessionAuthGuard` exists but is not attached to any route.
+- The `OutboxDispatcher` is not scheduled in the running app yet (tests call `dispatchPending()` directly). Add a scheduler in Wave C (`@nestjs/schedule` still not a dependency).
+- No enrolment-token re-issue path: a user whose token expires before enrolling the first passkey needs the Wave C resend-verification flow.
+- Expired/consumed `webauthn_challenges`, `enrolment_tokens`, and dead sessions accumulate (correctness is unaffected — every read filters on expiry/consumption); add opportunistic or scheduled cleanup alongside the Wave C scheduler.
+- Redis is defined in the local stack but not yet used (idempotency + sessions + challenges are Postgres-backed for now; a Redis fast-path is a later optimization that must preserve immediate revocation, per ADR-0020).
+- Device metadata is client-declared and untrusted until mobile attestation (Slice 8).
