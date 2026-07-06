@@ -36,6 +36,13 @@
       "when": 1783291340493,
       "tag": "0004_identity_kyc",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783326291216,
+      "tag": "0005_identity_auth",
+      "breakpoints": true
     }
   ]
 }

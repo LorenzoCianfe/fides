@@ -1,9 +1,9 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, resetDb, type TestDatabase } from '../../../test/db';
+import { CapturingNotifications } from '../../../test/notifications';
 import { outbox } from '../../database/schema/outbox';
 import { UuidV7Generator } from '../../shared/ids/uuid-v7';
-import type { NotificationPort } from '../../shared/notifications/notification.port';
 import { SystemClock } from '../../shared/time/system-clock';
 import { MockKycAdapter } from '../kyc/infra/mock-kyc.adapter';
 import { kycApplications } from '../kyc/infra/kyc.schema';
@@ -15,21 +15,13 @@ import {
 } from './application/registration.service';
 import { users } from './infra/identity.schema';
 
-class CapturingNotifications implements NotificationPort {
-  readonly sent: { to: string; code: string }[] = [];
-  async sendEmailVerification(to: string, code: string): Promise<void> {
-    this.sent.push({ to, code });
-    return Promise.resolve();
-  }
-}
-
 const ids = new UuidV7Generator();
 const clock = new SystemClock();
 const { db, close } = createTestDb();
 const kyc = new MockKycAdapter(ids);
 const notifications = new CapturingNotifications();
 const registration = new RegistrationService(db as TestDatabase, ids, clock, kyc, notifications);
-const emailVerification = new EmailVerificationService(db as TestDatabase, clock);
+const emailVerification = new EmailVerificationService(db as TestDatabase, ids, clock);
 
 const baseInput: Omit<RegisterInput, 'email'> = {
   givenName: 'Alice',
@@ -79,11 +71,12 @@ describe('identity onboarding (integration)', () => {
     expect(events).toHaveLength(1);
   });
 
-  it('verifies the email with the delivered code and rejects reuse', async () => {
+  it('verifies the email, issues an enrolment token, and rejects reuse', async () => {
     const { userId } = await register('bob@example.com');
     const code = notifications.sent[0]!.code;
 
-    await emailVerification.verifyEmail(userId, code);
+    const { enrolmentToken } = await emailVerification.verifyEmail(userId, code);
+    expect(enrolmentToken).toMatch(/^fet_/);
     const [user] = await db.select().from(users).where(eq(users.id, userId));
     expect(user?.emailVerifiedAt).not.toBeNull();
 

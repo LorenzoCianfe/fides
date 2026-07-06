@@ -23,3 +23,4 @@ Each ADR captures one significant decision, its context, and its consequences. A
 | [0017](0017-orm-drizzle.md) | ORM selection: Drizzle | Accepted |
 | [0018](0018-money-representation-rounding.md) | Money representation and rounding policy | Accepted |
 | [0019](0019-synchronous-balance-projection.md) | Synchronous in-transaction balance projection (refines 0005) | Accepted |
+| [0020](0020-session-tokens-webauthn-policy.md) | Opaque server-side session tokens and WebAuthn ceremony policy (refines 0007) | Accepted |

@@ -10,6 +10,22 @@ export const envSchema = z.object({
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   DATABASE_URL: z.string().url().optional(),
   REDIS_URL: z.string().url().optional(),
+  /** WebAuthn relying-party ID: the effective domain of the clients. */
+  WEBAUTHN_RP_ID: z.string().min(1).default('localhost'),
+  /** Comma-separated list of origins accepted in WebAuthn ceremonies. */
+  WEBAUTHN_ORIGINS: z
+    .string()
+    .default('http://localhost:3001')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean),
+    ),
+  /** Session token lifetimes (ADR-0020); defaults match DEFAULT_SESSION_CONFIG. */
+  SESSION_ACCESS_TTL_MS: z.coerce.number().int().positive().optional(),
+  SESSION_REFRESH_IDLE_TTL_MS: z.coerce.number().int().positive().optional(),
+  SESSION_ABSOLUTE_TTL_MS: z.coerce.number().int().positive().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

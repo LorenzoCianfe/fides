@@ -3,20 +3,31 @@ import {
   PreconditionFailedError,
   ValidationError,
   type EventClock,
+  type IdGenerator,
 } from '@fides/domain';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { Database } from '../../../database/db.types';
 import { sha256Hex } from '../../../shared/crypto/secrets';
 import { emailVerifications, users } from '../infra/identity.schema';
+import { issueEnrolmentToken } from './enrolment-token';
 
-/** Verifies the email-verification code and marks the user's email verified. */
+export interface VerifyEmailResult {
+  /** One-time token authorizing the first passkey registration (ADR-0020). */
+  readonly enrolmentToken: string;
+}
+
+/**
+ * Verifies the email-verification code, marks the user's email verified, and
+ * issues the enrolment token that gates the first passkey registration.
+ */
 export class EmailVerificationService {
   constructor(
     private readonly db: Database,
+    private readonly ids: IdGenerator,
     private readonly clock: EventClock,
   ) {}
 
-  async verifyEmail(userId: string, code: string): Promise<void> {
+  async verifyEmail(userId: string, code: string): Promise<VerifyEmailResult> {
     const now = this.clock.now();
 
     const [row] = await this.db
@@ -34,7 +45,7 @@ export class EmailVerificationService {
       throw new ValidationError('Invalid email verification code');
     }
 
-    await this.db.transaction(async (tx) => {
+    return this.db.transaction(async (tx) => {
       await tx
         .update(emailVerifications)
         .set({ consumedAt: now })
@@ -43,6 +54,8 @@ export class EmailVerificationService {
         .update(users)
         .set({ emailVerifiedAt: now, updatedAt: now })
         .where(eq(users.id, userId));
+      const enrolmentToken = await issueEnrolmentToken(tx, this.ids, this.clock, userId);
+      return { enrolmentToken };
     });
   }
 }
