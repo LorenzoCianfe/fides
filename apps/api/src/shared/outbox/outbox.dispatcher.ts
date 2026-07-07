@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { Database, DatabaseTx } from '../../database/db.types';
 import { outbox } from '../../database/schema/outbox';
 
@@ -20,7 +20,9 @@ export interface DispatchResult {
  * handler runs, and the row is marked `dispatched` — all atomically. Handlers
  * must be idempotent because delivery is at-least-once. A handler failure bumps
  * the attempt count and leaves the row `pending` for retry until `maxAttempts`,
- * after which it is parked as `failed`.
+ * after which it is parked as `failed`. Event types with no registered handler
+ * are never claimed: they stay `pending` for the slice that will consume them
+ * (e.g. `kyc.approved` awaits account provisioning).
  */
 export class OutboxDispatcher {
   constructor(
@@ -30,10 +32,13 @@ export class OutboxDispatcher {
   ) {}
 
   async dispatchPending(batchSize = 100): Promise<DispatchResult> {
+    const knownTypes = Object.keys(this.handlers);
+    if (knownTypes.length === 0) return { processed: 0, skipped: 0, failed: 0 };
+
     const candidates = await this.db
       .select({ id: outbox.id })
       .from(outbox)
-      .where(eq(outbox.status, 'pending'))
+      .where(and(eq(outbox.status, 'pending'), inArray(outbox.type, knownTypes)))
       .orderBy(asc(outbox.createdAt), asc(outbox.id))
       .limit(batchSize);
 

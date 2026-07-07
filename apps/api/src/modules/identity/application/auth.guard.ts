@@ -1,7 +1,7 @@
 import { AuthenticationError } from '@fides/domain';
-import type { CanActivate, ExecutionContext } from '@nestjs/common';
+import { Inject, Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import type { Request } from 'express';
-import type { Principal, SessionService } from './session.service';
+import { SessionService, type Principal } from './session.service';
 
 /** A request carrying the guard-attached authenticated principal. */
 export interface AuthenticatedRequest extends Request {
@@ -22,10 +22,12 @@ export function extractBearerToken(header: string | undefined): string {
 /**
  * Session-backed authentication guard. Validates the bearer token against the
  * session row (immediate revocation, suspended users cut off) and attaches the
- * principal to the request. Registered via DI in Wave C; headless-testable.
+ * principal to the request. `@UseGuards` instantiates it as an enhancer, so it
+ * carries an explicit injection token; it stays headless-testable.
  */
+@Injectable()
 export class SessionAuthGuard implements CanActivate {
-  constructor(private readonly sessions: SessionService) {}
+  constructor(@Inject(SessionService) private readonly sessions: SessionService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();

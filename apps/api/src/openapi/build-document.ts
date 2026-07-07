@@ -2,12 +2,14 @@ import {
   createOpenApiRegistry,
   generateOpenApiDocument,
   HealthResponseSchema,
+  registerAuthPaths,
 } from '@fides/contracts';
 import type { OpenAPIObject } from '@nestjs/swagger';
 
 /**
- * Build the OpenAPI document from the Zod-first contracts. Routes are registered
- * here as they are added; the document is the single source served at /docs.
+ * Build the OpenAPI document from the Zod-first contracts. Domain surfaces
+ * register their paths via colocated registrars in @fides/contracts; the
+ * document served at /docs is generated, never hand-maintained (ADR-0015).
  */
 export function buildOpenApiDocument(appName: string, version: string): OpenAPIObject {
   const registry = createOpenApiRegistry();
@@ -24,6 +26,8 @@ export function buildOpenApiDocument(appName: string, version: string): OpenAPIO
       },
     },
   });
+
+  registerAuthPaths(registry);
 
   const document = generateOpenApiDocument(registry, { title: `${appName} API`, version });
   return document as unknown as OpenAPIObject;

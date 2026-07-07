@@ -29,3 +29,6 @@ export interface KycDecision {
 export interface KycPort {
   submit(applicant: KycApplicant): Promise<KycDecision>;
 }
+
+/** DI token binding the active KycPort adapter. */
+export const KYC_PORT = Symbol('KYC_PORT');

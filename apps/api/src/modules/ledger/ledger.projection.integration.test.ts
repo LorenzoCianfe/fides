@@ -148,4 +148,22 @@ describe('transaction-history projection (integration)', () => {
     const result = await dispatcher.dispatchPending();
     expect(result).toEqual({ processed: 0, skipped: 0, failed: 0 });
   });
+
+  it('leaves event types without a registered handler pending for their future consumer', async () => {
+    await db.insert(outbox).values({
+      id: ids.next(),
+      type: 'kyc.approved',
+      aggregateType: 'user',
+      aggregateId: ids.next(),
+      payload: { userId: 'someone' },
+      occurredAt: new Date(),
+    });
+
+    const result = await dispatcher.dispatchPending();
+    expect(result).toEqual({ processed: 0, skipped: 0, failed: 0 });
+
+    const [row] = await db.select().from(outbox).where(eq(outbox.type, 'kyc.approved'));
+    expect(row?.status).toBe('pending');
+    expect(row?.attempts).toBe(0);
+  });
 });

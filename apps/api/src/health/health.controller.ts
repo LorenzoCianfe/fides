@@ -1,10 +1,11 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Inject } from '@nestjs/common';
 import type { HealthResponseDto } from '@fides/contracts';
 import { HealthService } from './health.service';
 
 @Controller('health')
 export class HealthController {
-  constructor(private readonly health: HealthService) {}
+  // Explicit tokens: esbuild-based test transforms emit no design:paramtypes.
+  constructor(@Inject(HealthService) private readonly health: HealthService) {}
 
   @Get()
   check(): HealthResponseDto {
