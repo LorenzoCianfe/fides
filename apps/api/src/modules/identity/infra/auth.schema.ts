@@ -107,7 +107,11 @@ export const sessions = pgTable(
   }),
 );
 
-export const webauthnCeremonyEnum = pgEnum('webauthn_ceremony', ['registration', 'authentication']);
+export const webauthnCeremonyEnum = pgEnum('webauthn_ceremony', [
+  'registration',
+  'authentication',
+  'sca',
+]);
 
 /**
  * Short-lived, single-use WebAuthn challenges issued between option generation
@@ -122,6 +126,8 @@ export const webauthnChallenges = pgTable(
     challengeHash: text('challenge_hash').notNull(),
     type: webauthnCeremonyEnum('type').notNull(),
     userId: uuid('user_id').references(() => users.id),
+    /** Canonical action hash for `sca` ceremonies (dynamic linking, ADR-0021). */
+    actionHash: text('action_hash'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -154,8 +160,38 @@ export const enrolmentTokens = pgTable(
   }),
 );
 
+/**
+ * Single-use SCA grants (ADR-0021): a verified step-up assertion mints one,
+ * bound to the user, the session, and the canonical hash of the action it
+ * authorizes (dynamic linking). The money path consumes it atomically. Stored
+ * hashed, like every other bearer secret.
+ */
+export const scaGrants = pgTable(
+  'sca_grants',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => sessions.id),
+    /** Canonical SHA-256 of the action this grant authorizes. */
+    actionHash: text('action_hash').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    tokenHashUniq: uniqueIndex('sca_grants_token_hash_uniq').on(table.tokenHash),
+    userIdx: index('sca_grants_user_idx').on(table.userId),
+  }),
+);
+
 export type DeviceRow = typeof devices.$inferSelect;
 export type CredentialRow = typeof credentials.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type WebauthnChallengeRow = typeof webauthnChallenges.$inferSelect;
 export type EnrolmentTokenRow = typeof enrolmentTokens.$inferSelect;
+export type ScaGrantRow = typeof scaGrants.$inferSelect;

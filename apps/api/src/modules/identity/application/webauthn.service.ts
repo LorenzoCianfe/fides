@@ -3,6 +3,7 @@ import {
   AuthorizationError,
   ConflictError,
   NotFoundError,
+  PreconditionFailedError,
   type EventClock,
   type IdGenerator,
 } from '@fides/domain';
@@ -23,9 +24,15 @@ import { and, eq, gt, isNull } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import type { Database, DbExecutor } from '../../../database/db.types';
 import { sha256Hex } from '../../../shared/crypto/secrets';
-import { credentials, webauthnChallenges, type WebauthnChallengeRow } from '../infra/auth.schema';
+import {
+  credentials,
+  webauthnChallenges,
+  type CredentialRow,
+  type WebauthnChallengeRow,
+} from '../infra/auth.schema';
 import { users, type UserRow } from '../infra/identity.schema';
 import { assertEnrolmentTokenValid, consumeEnrolmentToken } from './enrolment-token';
+import { computeActionHash, issueScaGrant, type IssuedScaGrant, type ScaAction } from './sca-grant';
 import type { DeviceDescriptor, IssuedSession, SessionService } from './session.service';
 
 /** How long an issued challenge stays verifiable. */
@@ -63,6 +70,18 @@ export interface FinishRegistrationResult {
 export interface FinishAuthenticationParams {
   readonly response: AuthenticationResponseJSON;
   readonly device: DeviceDescriptor;
+}
+
+export interface StartStepUpParams {
+  /** The guard-validated principal's userId. */
+  readonly userId: string;
+  readonly action: ScaAction;
+}
+
+export interface FinishStepUpParams extends StartStepUpParams {
+  /** The guard-validated principal's sessionId; the grant is bound to it. */
+  readonly sessionId: string;
+  readonly response: AuthenticationResponseJSON;
 }
 
 /**
@@ -236,12 +255,118 @@ export class WebAuthnService {
       .limit(1);
     if (!credential) throw new AuthenticationError('Authentication failed');
 
+    const newCounter = await this.verifyAssertion(
+      credential,
+      params.response,
+      clientChallenge,
+      'Authentication failed',
+    );
+
+    const user = await this.requireUser(challenge.userId);
+    if (user.status === 'suspended') throw new AuthorizationError('Account suspended');
+
+    return this.db.transaction(async (tx) => {
+      await tx
+        .update(credentials)
+        .set({ counter: newCounter, lastUsedAt: now })
+        .where(eq(credentials.id, credential.id));
+      return this.sessions.issueSession(tx, user.id, params.device);
+    });
+  }
+
+  /**
+   * Issue assertion options for a step-up ceremony dynamically linked to the
+   * action (PSD2 SCA): the stored challenge is bound to the canonical action
+   * hash, so the signed assertion authorizes exactly this action and no other.
+   */
+  async startStepUp(params: StartStepUpParams): Promise<PublicKeyCredentialRequestOptionsJSON> {
+    const now = this.clock.now();
+    const user = await this.requireUser(params.userId);
+    const userCredentials = await this.db
+      .select()
+      .from(credentials)
+      .where(eq(credentials.userId, user.id));
+    if (userCredentials.length === 0) {
+      throw new PreconditionFailedError('No passkey enrolled for step-up authentication');
+    }
+
+    const options = await generateAuthenticationOptions({
+      rpID: this.config.rpId,
+      allowCredentials: userCredentials.map((credential) => ({
+        id: credential.credentialId,
+        transports: (credential.transports ?? undefined) as
+          AuthenticatorTransportFuture[] | undefined,
+      })),
+      userVerification: 'required',
+    });
+
+    await this.storeChallenge(
+      options.challenge,
+      'sca',
+      user.id,
+      now,
+      computeActionHash(params.action),
+    );
+    return options;
+  }
+
+  /**
+   * Verify the fresh step-up assertion against the action-bound challenge and
+   * mint the single-use grant the money path will consume (ADR-0021).
+   */
+  async finishStepUp(params: FinishStepUpParams): Promise<IssuedScaGrant> {
+    const now = this.clock.now();
+    const actionHash = computeActionHash(params.action);
+    const clientChallenge = extractClientChallenge(params.response.response.clientDataJSON);
+    await this.consumeChallenge(clientChallenge, 'sca', now, params.userId, actionHash);
+
+    const [credential] = await this.db
+      .select()
+      .from(credentials)
+      .where(
+        and(
+          eq(credentials.credentialId, params.response.id),
+          eq(credentials.userId, params.userId),
+        ),
+      )
+      .limit(1);
+    if (!credential) throw new AuthenticationError('Step-up verification failed');
+
+    const newCounter = await this.verifyAssertion(
+      credential,
+      params.response,
+      clientChallenge,
+      'Step-up verification failed',
+    );
+
+    await this.requireUser(params.userId);
+
+    return this.db.transaction(async (tx) => {
+      await tx
+        .update(credentials)
+        .set({ counter: newCounter, lastUsedAt: now })
+        .where(eq(credentials.id, credential.id));
+      return issueScaGrant(tx, this.ids, this.clock, {
+        userId: params.userId,
+        sessionId: params.sessionId,
+        actionHash,
+      });
+    });
+  }
+
+  /** Verify an assertion against a stored credential; returns the new counter. */
+  private async verifyAssertion(
+    credential: CredentialRow,
+    response: AuthenticationResponseJSON,
+    expectedChallenge: string,
+    failureMessage: string,
+  ): Promise<number> {
     let verified: boolean;
     let newCounter: number;
     try {
       const verification = await verifyAuthenticationResponse({
-        response: params.response,
-        expectedChallenge: clientChallenge,
+        response,
+        expectedChallenge,
         expectedOrigin: [...this.config.origins],
         expectedRPID: this.config.rpId,
         credential: {
@@ -256,20 +381,10 @@ export class WebAuthnService {
       verified = verification.verified;
       newCounter = verification.authenticationInfo.newCounter;
     } catch (error) {
-      throw new AuthenticationError('Authentication failed', { reason: errorMessage(error) });
+      throw new AuthenticationError(failureMessage, { reason: errorMessage(error) });
     }
-    if (!verified) throw new AuthenticationError('Authentication failed');
-
-    const user = await this.requireUser(challenge.userId);
-    if (user.status === 'suspended') throw new AuthorizationError('Account suspended');
-
-    return this.db.transaction(async (tx) => {
-      await tx
-        .update(credentials)
-        .set({ counter: newCounter, lastUsedAt: now })
-        .where(eq(credentials.id, credential.id));
-      return this.sessions.issueSession(tx, user.id, params.device);
-    });
+    if (!verified) throw new AuthenticationError(failureMessage);
+    return newCounter;
   }
 
   private async assertRegistrationAllowed(
@@ -300,12 +415,14 @@ export class WebAuthnService {
     type: WebauthnChallengeRow['type'],
     userId: string | null,
     now: Date,
+    actionHash?: string,
   ): Promise<void> {
     await this.db.insert(webauthnChallenges).values({
       id: this.ids.next(),
       challengeHash: sha256Hex(challenge),
       type,
       userId,
+      actionHash: actionHash ?? null,
       expiresAt: new Date(now.getTime() + WEBAUTHN_CHALLENGE_TTL_MS),
       createdAt: now,
     });
@@ -321,6 +438,7 @@ export class WebAuthnService {
     type: WebauthnChallengeRow['type'],
     now: Date,
     userId?: string,
+    actionHash?: string,
   ): Promise<WebauthnChallengeRow> {
     const conditions = [
       eq(webauthnChallenges.challengeHash, sha256Hex(challenge)),
@@ -329,6 +447,7 @@ export class WebAuthnService {
       gt(webauthnChallenges.expiresAt, now),
     ];
     if (userId !== undefined) conditions.push(eq(webauthnChallenges.userId, userId));
+    if (actionHash !== undefined) conditions.push(eq(webauthnChallenges.actionHash, actionHash));
 
     const [row] = await this.db
       .update(webauthnChallenges)

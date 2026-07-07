@@ -43,6 +43,13 @@
       "when": 1783326291216,
       "tag": "0005_identity_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783345988406,
+      "tag": "0006_sca-step-up",
+      "breakpoints": true
     }
   ]
 }
