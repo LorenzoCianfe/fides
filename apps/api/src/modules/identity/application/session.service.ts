@@ -5,7 +5,7 @@ import {
   type EventClock,
   type IdGenerator,
 } from '@fides/domain';
-import { and, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lt, or } from 'drizzle-orm';
 import type { Database, DbExecutor } from '../../../database/db.types';
 import { generateToken, sha256Hex } from '../../../shared/crypto/secrets';
 import { devices, sessions } from '../infra/auth.schema';
@@ -48,6 +48,16 @@ export interface IssuedSession {
   readonly accessTokenExpiresAt: Date;
   readonly refreshExpiresAt: Date;
   readonly absoluteExpiresAt: Date;
+}
+
+/** One row of a user's session list; token hashes never leave the service. */
+export interface SessionSummary {
+  readonly sessionId: string;
+  readonly deviceId: string;
+  readonly deviceName: string;
+  readonly devicePlatform: string;
+  readonly createdAt: Date;
+  readonly lastUsedAt: Date;
 }
 
 /** The authenticated caller attached to a request by the auth guard. */
@@ -252,6 +262,31 @@ export class SessionService {
       });
     }
     return outcome.session;
+  }
+
+  /** Active (unrevoked, unexpired) sessions for a user, most recently used first. */
+  async listSessions(userId: string): Promise<SessionSummary[]> {
+    const now = this.clock.now();
+    return this.db
+      .select({
+        sessionId: sessions.id,
+        deviceId: devices.id,
+        deviceName: devices.name,
+        devicePlatform: devices.platform,
+        createdAt: sessions.createdAt,
+        lastUsedAt: sessions.lastUsedAt,
+      })
+      .from(sessions)
+      .innerJoin(devices, eq(devices.id, sessions.deviceId))
+      .where(
+        and(
+          eq(sessions.userId, userId),
+          isNull(sessions.revokedAt),
+          gt(sessions.refreshExpiresAt, now),
+          gt(sessions.absoluteExpiresAt, now),
+        ),
+      )
+      .orderBy(desc(sessions.lastUsedAt));
   }
 
   /**

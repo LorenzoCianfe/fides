@@ -13,8 +13,8 @@ import { appendToOutbox } from '../../../shared/outbox/outbox.writer';
 import type { KycDecision, KycPort } from '../../kyc/application/kyc.port';
 import { kycApplications } from '../../kyc/infra/kyc.schema';
 import { emailVerifications, users } from '../infra/identity.schema';
+import { EMAIL_VERIFICATION_TTL_MS } from './email-verification.service';
 
-export const EMAIL_VERIFICATION_TTL_MS = 15 * 60 * 1000;
 export const KYC_APPROVED_EVENT = 'kyc.approved';
 
 export interface RegisterInput {

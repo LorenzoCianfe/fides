@@ -31,7 +31,12 @@ const { db, close } = createTestDb();
 const kyc = new MockKycAdapter(ids);
 const notifications = new CapturingNotifications();
 const registration = new RegistrationService(db as TestDatabase, ids, clock, kyc, notifications);
-const emailVerification = new EmailVerificationService(db as TestDatabase, ids, clock);
+const emailVerification = new EmailVerificationService(
+  db as TestDatabase,
+  ids,
+  clock,
+  notifications,
+);
 const sessions = new SessionService(db as TestDatabase, ids, clock);
 const webauthn = new WebAuthnService(db as TestDatabase, ids, clock, sessions, RP);
 
@@ -48,7 +53,7 @@ const baseInput: Omit<RegisterInput, 'email'> = {
 async function onboard(email: string): Promise<{ userId: string; enrolmentToken: string }> {
   const { userId } = await registration.register({ ...baseInput, email });
   const code = notifications.sent.at(-1)!.code;
-  const { enrolmentToken } = await emailVerification.verifyEmail(userId, code);
+  const { enrolmentToken } = await emailVerification.verifyEmail(email, code);
   return { userId, enrolmentToken };
 }
 
@@ -426,5 +431,63 @@ describe('sessions (integration)', () => {
       .from(sessionRows)
       .where(and(eq(sessionRows.id, session.sessionId), eq(sessionRows.userId, userId)));
     expect(row?.revokedReason).toBe('logout');
+  });
+
+  it('lists active sessions per device, newest first, hiding revoked ones', async () => {
+    const { userId, enrolmentToken } = await onboard('alice@example.com');
+    const { authenticator, session: first } = await enrolPasskey(userId, enrolmentToken);
+
+    clock.advance(60_000);
+    const options = await webauthn.startAuthentication('alice@example.com');
+    const response = authenticator.createAuthenticationResponse({
+      challenge: options.challenge,
+      rpId: RP.rpId,
+      origin: ORIGIN,
+    });
+    const second = await webauthn.finishAuthentication({
+      response,
+      device: { name: 'Fides for iOS', platform: 'ios' },
+    });
+
+    const listed = await sessions.listSessions(userId);
+    expect(listed.map((entry) => entry.sessionId)).toEqual([second.sessionId, first.sessionId]);
+    expect(listed[0]?.devicePlatform).toBe('ios');
+    expect(listed[1]?.deviceName).toBe(DEVICE.name);
+    for (const entry of listed) {
+      expect(Object.keys(entry)).not.toContain('accessTokenHash');
+    }
+
+    await sessions.revokeSession(first.sessionId, { userId });
+    const afterRevoke = await sessions.listSessions(userId);
+    expect(afterRevoke.map((entry) => entry.sessionId)).toEqual([second.sessionId]);
+  });
+});
+
+describe('enrolment token re-issue (integration)', () => {
+  it('recovers an expired enrolment token through resend + verify on any device', async () => {
+    const { userId, enrolmentToken } = await onboard('alice@example.com');
+
+    clock.advance(16 * 60 * 1000);
+    await expect(webauthn.startRegistration({ userId, enrolmentToken })).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+
+    await emailVerification.resendVerification('alice@example.com');
+    const code = notifications.sent.at(-1)!.code;
+    const fresh = await emailVerification.verifyEmail('alice@example.com', code);
+    expect(fresh.userId).toBe(userId);
+    expect(fresh.enrolmentToken).not.toBe(enrolmentToken);
+
+    const { session } = await enrolPasskey(userId, fresh.enrolmentToken);
+    expect(session.accessToken).toMatch(/^fat_/);
+  });
+
+  it('resend no-ops once a passkey exists', async () => {
+    const { userId, enrolmentToken } = await onboard('alice@example.com');
+    await enrolPasskey(userId, enrolmentToken);
+
+    const sentBefore = notifications.sent.length;
+    await emailVerification.resendVerification('alice@example.com');
+    expect(notifications.sent).toHaveLength(sentBefore);
   });
 });

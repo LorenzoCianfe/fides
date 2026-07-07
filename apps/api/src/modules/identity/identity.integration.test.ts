@@ -21,7 +21,12 @@ const { db, close } = createTestDb();
 const kyc = new MockKycAdapter(ids);
 const notifications = new CapturingNotifications();
 const registration = new RegistrationService(db as TestDatabase, ids, clock, kyc, notifications);
-const emailVerification = new EmailVerificationService(db as TestDatabase, ids, clock);
+const emailVerification = new EmailVerificationService(
+  db as TestDatabase,
+  ids,
+  clock,
+  notifications,
+);
 
 const baseInput: Omit<RegisterInput, 'email'> = {
   givenName: 'Alice',
@@ -71,25 +76,51 @@ describe('identity onboarding (integration)', () => {
     expect(events).toHaveLength(1);
   });
 
-  it('verifies the email, issues an enrolment token, and rejects reuse', async () => {
+  it('verifies the email by address, issues an enrolment token, and rejects reuse', async () => {
     const { userId } = await register('bob@example.com');
     const code = notifications.sent[0]!.code;
 
-    const { enrolmentToken } = await emailVerification.verifyEmail(userId, code);
-    expect(enrolmentToken).toMatch(/^fet_/);
+    const result = await emailVerification.verifyEmail('Bob@Example.com', code);
+    expect(result.userId).toBe(userId);
+    expect(result.enrolmentToken).toMatch(/^fet_/);
     const [user] = await db.select().from(users).where(eq(users.id, userId));
     expect(user?.emailVerifiedAt).not.toBeNull();
 
-    await expect(emailVerification.verifyEmail(userId, code)).rejects.toMatchObject({
-      code: 'NOT_FOUND',
+    await expect(emailVerification.verifyEmail('bob@example.com', code)).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
     });
   });
 
-  it('rejects an incorrect verification code', async () => {
-    const { userId } = await register('carol@example.com');
-    await expect(emailVerification.verifyEmail(userId, 'bad-code')).rejects.toMatchObject({
+  it('fails uniformly for a wrong code and for an unknown email', async () => {
+    await register('carol@example.com');
+    const sent = notifications.sent[0]!.code;
+    const wrong = sent === '000000' ? '000001' : '000000';
+    const [wrongCode, unknownEmail] = await Promise.all([
+      emailVerification.verifyEmail('carol@example.com', wrong).catch((error: unknown) => error),
+      emailVerification.verifyEmail('nobody@example.com', wrong).catch((error: unknown) => error),
+    ]);
+    expect(wrongCode).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(unknownEmail).toMatchObject({
       code: 'VALIDATION_FAILED',
+      message: (wrongCode as Error).message,
     });
+  });
+
+  it('re-delivers a code on resend and verifies with the newest one', async () => {
+    const { userId } = await register('erin@example.com');
+
+    await emailVerification.resendVerification('erin@example.com');
+    expect(notifications.sent).toHaveLength(2);
+    const newCode = notifications.sent.at(-1)!.code;
+
+    const result = await emailVerification.verifyEmail('erin@example.com', newCode);
+    expect(result.userId).toBe(userId);
+    expect(result.enrolmentToken).toMatch(/^fet_/);
+  });
+
+  it('resend is silent for unknown emails', async () => {
+    await emailVerification.resendVerification('ghost@example.com');
+    expect(notifications.sent).toHaveLength(0);
   });
 
   it('rejects a duplicate email case-insensitively', async () => {
