@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Document | Security architecture and controls |
-| Version | 0.1.0 |
-| Status | Draft — discovery complete |
+| Version | 0.2.0 |
+| Status | Living — Phase 1 controls landing |
 | Regulatory frame | EU/EEA: PSD2/SCA, GDPR (simulated, unlicensed) |
-| Last updated | 2026-07-04 |
+| Last updated | 2026-07-06 |
 
 ---
 
@@ -39,12 +39,14 @@ Note on status: Fides is a simulated core and not a licensed institution. Real c
 - Login and sensitive operations require two independent factors from the categories knowledge, possession, and inherence.
 - **Step-up SCA** is enforced for high-risk actions: outbound payments, adding payees, changing security settings, raising limits, and sensitive card actions.
 - SCA is designed with dynamic linking in mind for payment operations (authentication bound to amount and payee).
+- Implemented (Phase 1, ADR-0020/0021): every WebAuthn assertion requires user verification (two factors per ceremony); the step-up seam binds an action-hashed challenge to a fresh assertion and mints a single-use grant that the guarded operation consumes atomically — dynamic linking in effect, first enforced on the P2P transfer.
 
 ### 2.3 Sessions
 
 - Short-lived access tokens with refresh; server-side session and device records enable immediate revocation.
 - Idle and absolute session timeouts; re-authentication on sensitive actions.
 - Anomalous-session signals (new device, geo velocity) feed the risk engine.
+- Implemented (Phase 1, ADR-0020/0021): opaque hashed tokens validated against the session row on every request, rotation with reuse detection, per-device session listing and revocation over `/v1/auth`, per-IP rate limiting on the auth endpoints, and a retention sweeper (dead secrets purged promptly; dead sessions kept 90 days for forensics until the audit trail lands).
 
 ## 3. Authorization
 
@@ -158,4 +160,5 @@ Fides is not a licensed institution; this mapping documents how the design align
 
 | Version | Date | Change |
 |---|---|---|
+| 0.2.0 | 2026-07-06 | Phase 1 Slice 3 controls implemented and annotated: passkey/WebAuthn two-factor ceremonies with anti-enumeration, opaque server-side sessions with immediate revocation (ADR-0020); SCA step-up with dynamic linking, auth rate limiting, and the retention sweeper (ADR-0021). |
 | 0.1.0 | 2026-07-04 | Initial security model: identity, authz, KYC/AML, monitoring, data protection, audit, SDLC, threat model. |
