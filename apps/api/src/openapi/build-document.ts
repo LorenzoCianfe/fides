@@ -2,6 +2,7 @@ import {
   createOpenApiRegistry,
   generateOpenApiDocument,
   HealthResponseSchema,
+  registerAccountPaths,
   registerAuthPaths,
 } from '@fides/contracts';
 import type { OpenAPIObject } from '@nestjs/swagger';
@@ -28,6 +29,7 @@ export function buildOpenApiDocument(appName: string, version: string): OpenAPIO
   });
 
   registerAuthPaths(registry);
+  registerAccountPaths(registry);
 
   const document = generateOpenApiDocument(registry, { title: `${appName} API`, version });
   return document as unknown as OpenAPIObject;

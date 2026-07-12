@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Document | Security architecture and controls |
-| Version | 0.2.0 |
+| Version | 0.3.0 |
 | Status | Living — Phase 1 controls landing |
 | Regulatory frame | EU/EEA: PSD2/SCA, GDPR (simulated, unlicensed) |
-| Last updated | 2026-07-06 |
+| Last updated | 2026-07-12 |
 
 ---
 
@@ -54,6 +54,7 @@ Note on status: Fides is a simulated core and not a licensed institution. Real c
 
 - Every API request is authorized server-side against the authenticated principal and resource ownership. Object-level checks prevent access to another user's accounts, cards, or data.
 - Input is validated against shared Zod schemas; the API never trusts client-supplied identifiers implicitly.
+- Implemented (Phase 1, Slice 4): the `/v1/accounts` read surface is session-guarded and ownership-scoped — the list is bound to the authenticated principal and the single-account read resolves the owner server-side and asserts ownership (`assertResourceOwnership`), so one user's account id cannot be used to read another's. Account identifiers are non-enumerable UUID v7.
 
 ### 3.2 Admin authorization (back office)
 
@@ -160,5 +161,6 @@ Fides is not a licensed institution; this mapping documents how the design align
 
 | Version | Date | Change |
 |---|---|---|
+| 0.3.0 | 2026-07-12 | Phase 1 Slice 4: object-level authorization enforced on the `/v1/accounts` customer resource (session guard + server-side ownership assertion); account provisioning is event-driven and idempotent (ADR-0022). |
 | 0.2.0 | 2026-07-06 | Phase 1 Slice 3 controls implemented and annotated: passkey/WebAuthn two-factor ceremonies with anti-enumeration, opaque server-side sessions with immediate revocation (ADR-0020); SCA step-up with dynamic linking, auth rate limiting, and the retention sweeper (ADR-0021). |
 | 0.1.0 | 2026-07-04 | Initial security model: identity, authz, KYC/AML, monitoring, data protection, audit, SDLC, threat model. |

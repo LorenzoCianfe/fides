@@ -6,7 +6,7 @@ import {
   type IdGenerator,
 } from '@fides/domain';
 import { eq } from 'drizzle-orm';
-import type { Database } from '../../../database/db.types';
+import type { Database, DbExecutor } from '../../../database/db.types';
 import { normalBalance, type AccountType, type LedgerAccount } from '../domain';
 import { balances, ledgerAccounts, postings, type LedgerAccountRow } from './ledger.schema';
 
@@ -37,19 +37,34 @@ export class LedgerStore {
     private readonly ids: IdGenerator,
   ) {}
 
-  /** Create a ledger account and its zero-balance projection row atomically. */
-  async createAccount(input: CreateLedgerAccountInput): Promise<LedgerAccount> {
+  /**
+   * Create a ledger account and its zero-balance projection row atomically.
+   *
+   * Pass `executor` to enlist in an existing transaction — provisioning does
+   * this so the ledger account commits together with the accounts/wallets rows
+   * and the outbox dispatch marker (see `AccountProvisioningService`). Omit it
+   * to run in the store's own transaction, as system-account setup does.
+   */
+  async createAccount(
+    input: CreateLedgerAccountInput,
+    executor?: DbExecutor,
+  ): Promise<LedgerAccount> {
     const id = input.id ?? this.ids.next();
-    await this.db.transaction(async (tx) => {
-      await tx.insert(ledgerAccounts).values({
+    const write = async (exec: DbExecutor): Promise<void> => {
+      await exec.insert(ledgerAccounts).values({
         id,
         type: input.type,
         currency: input.currency,
         code: input.code,
         system: input.system,
       });
-      await tx.insert(balances).values({ accountId: id, balance: '0', currency: input.currency });
-    });
+      await exec.insert(balances).values({ accountId: id, balance: '0', currency: input.currency });
+    };
+    if (executor) {
+      await write(executor);
+    } else {
+      await this.db.transaction(write);
+    }
     return {
       id,
       type: input.type,

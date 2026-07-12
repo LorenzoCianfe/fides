@@ -10,3 +10,5 @@ export * from './auth/session';
 export * from './auth/webauthn';
 export * from './auth/sca';
 export * from './auth/paths';
+export * from './accounts/account';
+export * from './accounts/paths';

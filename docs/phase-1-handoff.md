@@ -4,16 +4,16 @@
 |---|---|
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) |
 | Branch | `phase-1-walking-skeleton` — not yet PR'd (single PR at phase end) |
-| Verified | `apps/api` 95/95 tests green; lint, typecheck, and production build clean |
-| Last updated | 2026-07-06 |
+| Verified | `apps/api` 102/102 tests green; lint, typecheck, and production build clean |
+| Last updated | 2026-07-12 |
 
-> Resume point: **Slice 4 (accounts & wallets)**. Read §4 (locked decisions) before writing code — in particular the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) and the SCA grant contract the Slice 5 transfer must consume. Auth policy is pinned in ADR-0020/ADR-0021.
+> Resume point: **Slice 5 (P2P transfer + dev funding)**. Read §4 (locked decisions) before writing code — in particular the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) and the SCA grant contract the transfer must consume (`consumeScaGrant` inside the posting transaction, ADR-0021). Slice 5 credits/debits the **wallet ledger accounts** provisioned in Slice 4 (`wallet:<walletId>`, liability) and funds from `system:settlement` (asset). Auth policy is pinned in ADR-0020/ADR-0021; the account model in ADR-0022.
 
 ---
 
 ## 1. One-paragraph orientation
 
-Phase 1 is built **backend-first** ("API + tests first, clients after"). The double-entry **ledger** (Slices 1–2) and the whole of **Slice 3** — identity onboarding (Wave A), WebAuthn relying party + server-side sessions (Wave B, ADR-0020), and the **`/v1/auth` HTTP surface with SCA step-up, throttling, and operational schedulers** (Wave C, ADR-0021) — are complete. Everything runs against a real Postgres via Testcontainers, including full HTTP journeys driven through supertest by a software authenticator producing genuine attestations and assertions. `pnpm test` requires a running Docker daemon. Continue at Slice 4; §5 has the concrete next steps.
+Phase 1 is built **backend-first** ("API + tests first, clients after"). The double-entry **ledger** (Slices 1–2), the whole of **Slice 3** — identity onboarding (Wave A), WebAuthn relying party + server-side sessions (Wave B, ADR-0020), and the **`/v1/auth` HTTP surface with SCA step-up, throttling, and operational schedulers** (Wave C, ADR-0021) — and **Slice 4** (accounts & wallets: event-driven idempotent provisioning off `kyc.approved` + the `/v1/accounts` read surface, ADR-0022) are complete. Everything runs against a real Postgres via Testcontainers, including full HTTP journeys driven through supertest by a software authenticator producing genuine attestations and assertions. `pnpm test` requires a running Docker daemon. Continue at Slice 5; §5 has the concrete next steps.
 
 ## 2. Status by slice
 
@@ -21,8 +21,8 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 |---|---|---|---|
 | 1 | Ledger domain core | Done | `c7b3379` |
 | 2 | Ledger persistence + async projection | Done | `4872171`, `3a05853` |
-| 3 | Identity, WebAuthn, sessions, HTTP surface + SCA | **Done** (Waves A `0a274b8`, B `ea42e01`, C — this session) | see git log |
-| 4 | Accounts & wallets | Not started | — |
+| 3 | Identity, WebAuthn, sessions, HTTP surface + SCA | Done (Waves A `0a274b8`, B `ea42e01`, C `faaf649`) | see git log |
+| 4 | Accounts & wallets | **Done** (this session) | see git log |
 | 5 | P2P transfer + dev funding | Not started | — |
 | 6 | Audit trail (hash-chained) | Not started | — |
 | 7 | Admin RBAC + MFA + four-eyes | Not started | — |
@@ -46,18 +46,26 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
   - `application/identity-sweeper.ts` — ADR-0021 retention (prompt purge of dead secrets; 90-day grace for dead sessions; grants swept before sessions for the FK).
   - HTTP: `http/auth.controller.ts` (register, verify-email, resend-verification, WebAuthn registration/authentication options+verify, refresh; per-route throttles; optional-bearer resolution for additional passkeys), `http/sessions.controller.ts` (logout, list, revoke — `SessionAuthGuard`), `http/sca.controller.ts` (options, verify — guarded), `http/dtos.ts` (nestjs-zod DTOs), `identity.module.ts` (factories + module-scoped `ThrottlerModule` with `skipIf` kill-switch).
 
+**Accounts** (`apps/api/src/modules/accounts`) — Slice 4, ADR-0022
+- `infra/accounts.schema.ts` — `accounts` (one per user: unique `user_id`) and `wallets` (one per currency per account; unique 1:1 `ledger_account_id` binding). Migration `0007`. No balance column: balances are read from the ledger projection.
+- `application/account-provisioning.service.ts` — the `kyc.approved` outbox handler. Runs **inside the dispatcher transaction**; creates the account, wallet, and backing ledger account (`wallet:<walletId>`, liability) atomically with the dispatch marker. Idempotent via insert-first `ON CONFLICT (user_id) DO NOTHING` (redelivery short-circuits before any ledger account is created — no orphans).
+- `application/account.service.ts` — read side: `listAccounts` (principal-scoped) and `getAccount` (ownership-asserted); each wallet's live balance comes from `LedgerStore.getBalance`.
+- `http/accounts.controller.ts` — `GET /v1/accounts`, `GET /v1/accounts/:accountId` (`SessionAuthGuard`, `CurrentPrincipal`, explicit `ZodValidationPipe`). `accounts.module.ts` binds the services by factory and exports `AccountProvisioningService` for the dispatcher.
+- Enabling change: `LedgerStore.createAccount` takes an optional `executor` (enlist in a caller's tx, like `SessionService.issueSession`); `kyc.approved` now has a typed payload in `kyc/application/kyc-events.ts`.
+
 **Platform** (`apps/api/src`)
 - `app.setup.ts` `configureApp` — shared by `main.ts` and tests: correlation-id middleware (honor well-formed inbound, else UUID v7; echoed; feeds the error envelope), `/v1` prefix (`/health` excluded), CORS allowlist (`CORS_ORIGINS` ?? `WEBAUTHN_ORIGINS`), global `ZodValidationPipe` + `DomainExceptionFilter` (now maps 429 → `RATE_LIMITED` and unwraps nestjs-zod issues), OpenAPI at `/docs` (`/docs-json`).
 - `database.module.ts` — fail-fast on missing `DATABASE_URL`; pool closed on shutdown (`OnApplicationShutdown`).
 - `shared/tokens.ts` + `shared.module.ts` — global `ID_GENERATOR`, `CLOCK`, `NOTIFICATIONS` bindings.
-- `operations/` — `OutboxDispatcher` (now **only claims registered event types**; `kyc.approved` stays `pending` for Slice 4) and `IdentitySweeper` on env-tunable, overlap-guarded intervals (`OperationsScheduler`, `SCHEDULERS_ENABLED` kill-switch).
+- `operations/` — `OutboxDispatcher` (claims only registered event types; registry now handles `ledger.entry.posted` → history projector and `kyc.approved` → account provisioning) and `IdentitySweeper` on env-tunable, overlap-guarded intervals (`OperationsScheduler`, `SCHEDULERS_ENABLED` kill-switch).
 
-**Contracts** (`packages/contracts/src/auth/`)
-- Zod-first request/response schemas (`primitives`, `registration`, `webauthn`, `session`, `sca`) — client-submitted WebAuthn payloads use `.passthrough()` so validation never strips spec fields; server-issued options are documentation-shaped. `auth/paths.ts` registers all `/v1/auth/*` paths + the bearer security scheme on the shared OpenAPI registry (consumed by `apps/api/src/openapi/build-document.ts`).
+**Contracts** (`packages/contracts/src/`)
+- `auth/` — Zod-first request/response schemas (`primitives`, `registration`, `webauthn`, `session`, `sca`); client-submitted WebAuthn payloads use `.passthrough()` so validation never strips spec fields; server-issued options are documentation-shaped. `auth/paths.ts` registers all `/v1/auth/*` paths + the bearer security scheme.
+- `accounts/` — `account.ts` (`Account`, `Wallet` with a `Money` balance, `AccountList`, `AccountIdParams`) and `accounts/paths.ts` (`registerAccountPaths`, `/v1/accounts` + `/v1/accounts/{accountId}`). Registrars are consumed by `apps/api/src/openapi/build-document.ts`.
 
-**Tests** (95 total) — everything under `corepack pnpm --filter @fides/api test`:
-- Service-level integration: ledger (posting, projection, unknown-event pending), identity (onboarding, email-keyed verify, resend), auth (19 WebAuthn/session scenarios incl. re-issue path and session listing), SCA (9 dynamic-linking scenarios), sweeper (retention semantics).
-- HTTP integration (supertest against the real `AppModule`): full journey, error envelope, anti-enumeration, correlation ids, versioning, OpenAPI; throttling (dedicated app, kill-switch on); armed schedulers (dead row swept by the interval).
+**Tests** (102 total) — everything under `corepack pnpm --filter @fides/api test`:
+- Service-level integration: ledger (posting, projection, unknown-event pending), identity (onboarding, email-keyed verify, resend), auth (WebAuthn/session scenarios incl. re-issue path and session listing), SCA (dynamic-linking scenarios), sweeper (retention semantics), **account provisioning (provision on `kyc.approved`, idempotent redelivery, per-user backlog drain)**.
+- HTTP integration (supertest against the real `AppModule`): full auth journey, error envelope, anti-enumeration, correlation ids, versioning, OpenAPI; throttling (dedicated app, kill-switch on); armed schedulers (dead row swept by the interval); **accounts (`/v1/accounts` provisioning-then-read, zero EUR wallet, owner scoping incl. 401/403/404, OpenAPI presence)**.
 - Unit: canonical stringify, correlation middleware, auth guard, health.
 
 ## 4. Locked decisions (constraints for the rest of Phase 1)
@@ -71,7 +79,8 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 | Enumeration posture | Login decoys + uniform email-keyed verify/resend; **registration keeps explicit 409** (throttled) | ADR-0020/0021 |
 | Rate limiting | `@nestjs/throttler` in-memory, module-scoped, `THROTTLE_ENABLED` kill-switch | ADR-0021 (done) |
 | Retention | Dead secrets purged promptly; dead sessions kept 90 days (until Slice 6 audit) | ADR-0021 (done) |
-| Outbox semantics | Dispatcher claims only registered types — **Slice 4 registers a `kyc.approved` handler and the backlog drains automatically** | Done (Wave C) |
+| Outbox semantics | Dispatcher claims only registered types; `kyc.approved` handler registered and the backlog drains on dispatch | Done (Slice 4) |
+| Account model | Account → wallet → ledger account (1:1 in Phase 1); no stored balance; event-driven idempotent provisioning in the dispatcher tx | ADR-0022 (done) |
 | Balance model | Synchronous in-transaction balance projection, authoritative for funds checks | ADR-0019 (done) |
 | Append-only | DB triggers reject UPDATE/DELETE on ledger tables | Done |
 | Admin | Full RBAC + MFA + four-eyes built in Slice 7 | Slice 7 |
@@ -82,13 +91,13 @@ Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` 
 
 ## 5. Next steps
 
-### Slice 4 — Accounts & wallets
-- Consume `kyc.approved`: register a handler in the `OperationsModule` dispatcher registry (the pending backlog drains on first dispatch) that provisions one EUR account + wallet + backing ledger account (`wallet:<walletId>`, liability) via `LedgerStore.createAccount`, idempotently (the handler may be re-delivered).
-- `accounts` module: schema (accounts, wallets), application service, read endpoint(s) under `/v1/accounts` following the Wave C controller conventions (explicit `@Inject`, explicit `ZodValidationPipe(Dto)`, contracts + paths in `@fides/contracts`, integration tests over HTTP).
+### Slice 4 — Accounts & wallets — DONE (this session, ADR-0022)
+- `kyc.approved` handler registered in the `OperationsModule` dispatcher registry; provisions one EUR account + wallet + backing ledger account (`wallet:<walletId>`, liability) via `LedgerStore.createAccount`, atomically in the dispatcher tx and idempotently.
+- `accounts` module: `accounts`/`wallets` schema (migration `0007`), provisioning + read services, `GET /v1/accounts` and `GET /v1/accounts/:accountId` under the Wave C conventions; contracts + paths in `@fides/contracts`; service and HTTP integration tests.
 
-### Slice 5 — P2P transfer + dev funding
-- Idempotent (`Idempotency-Key` header → per-actor idempotency table), **SCA-gated** transfer: recompute the action hash from the transfer payload and call `consumeScaGrant(tx, { userId, sessionId, grant, actionHash, now })` inside the same transaction as `PostingService.post` (`Dr sender / Cr recipient`, sender wallet guarded).
-- Dev/admin funding from `system:settlement` (asset); balance + history read endpoints. This proves the Phase 1 exit criteria end to end.
+### Slice 5 — P2P transfer + dev funding (NEXT)
+- Idempotent (`Idempotency-Key` header → per-actor idempotency table), **SCA-gated** transfer: recompute the action hash from the transfer payload and call `consumeScaGrant(tx, { userId, sessionId, grant, actionHash, now })` inside the same transaction as `PostingService.post` (`Dr sender / Cr recipient`, sender wallet guarded). Resolve sender/recipient wallets → their `ledger_account_id` (the `wallet:<walletId>` accounts provisioned in Slice 4).
+- Dev/admin funding from `system:settlement` (asset); balance + transaction-history read endpoints (the account resource already exposes the current wallet balance; Slice 5 adds history and makes the balance move). This proves the Phase 1 exit criteria end to end.
 
 ### Slices 6–8 (per `roadmap.md`)
 - **6 Audit:** append-only, hash-chained audit trail; wire into sensitive actions; revisit the ADR-0021 session-retention grace once audit exists.
@@ -103,7 +112,7 @@ Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` 
 - **DI/validation convention (important):** the vitest esbuild transform emits no `design:paramtypes`, so type-only injection silently yields `undefined` in tests. Every Nest-instantiated class (controllers, guards, schedulers) uses **explicit `@Inject(Token)`** constructor parameters, and every `@Body`/`@Param` carries an **explicit `new ZodValidationPipe(Dto)`** (the global pipe stays as a production safety net; the contracts' transforms are idempotent). Follow this for all new HTTP surface.
 - **Contracts build:** `apps/api` consumes `@fides/contracts` from its built `dist` — after editing contracts run `corepack pnpm --filter @fides/contracts build` before typechecking the API.
 - **Git pre-commit hook** runs `pnpm exec lint-staged`; prefix commits with the Corepack shim: `PATH="$HOME/.corepack-shims:$PATH" git commit ...`.
-- **Migrations** are generated offline: `corepack pnpm --filter @fides/api exec drizzle-kit generate --name <name>` (latest: `0006_sca-step-up`). New env vars are documented in `.env.example` (WebAuthn, session TTLs, CORS, throttle/scheduler switches and intervals).
+- **Migrations** are generated offline: `corepack pnpm --filter @fides/api exec drizzle-kit generate --name <name>` (latest: `0007_accounts_wallets`). New env vars are documented in `.env.example` (WebAuthn, session TTLs, CORS, throttle/scheduler switches and intervals). Slice 4 added no env vars.
 - **Repo is PUBLIC** (`LorenzoCianfe/fides`); Dependabot tuned on `main`; framework majors deferred to Phase 7.
 - **Commit cadence:** per-slice conventional commits on `phase-1-walking-skeleton`; one PR at Phase 1 completion.
 
@@ -129,4 +138,5 @@ Manual smoke: `pnpm stack:up`, set `.env`, run `corepack pnpm --filter @fides/ap
 - Redis is still unused (sessions/challenges/idempotency are Postgres-backed; any Redis fast-path must preserve immediate revocation, ADR-0020).
 - Device metadata is client-declared and untrusted until mobile attestation (Slice 8).
 - WebAuthn **server-issued options schemas** in contracts are documentation-shaped (responses are not runtime-validated); client-submitted payloads are validated with `.passthrough()`.
-- `kyc.approved` events accumulate as `pending` until the Slice 4 handler registers — intended (they are the provisioning queue), but the first dispatch after Slice 4 lands will process the whole backlog.
+- **Account provisioning is asynchronous:** a just-approved user has no account until the outbox dispatcher runs (`GET /v1/accounts` returns an empty list until then, never an error). With `SCHEDULERS_ENABLED=false` (the HTTP test topology), drive it explicitly via `app.get(OutboxDispatcher).dispatchPending()`.
+- The `GET /v1/accounts/:accountId` route returns **403** (not 404) for an account owned by another user — a deliberate, minor existence oracle kept for consistency with `assertResourceOwnership`; account ids are non-enumerable UUID v7 (ADR-0022).

@@ -10,12 +10,11 @@ import type { Database } from '../../../database/db.types';
 import { generateNumericCode, sha256Hex } from '../../../shared/crypto/secrets';
 import type { NotificationPort } from '../../../shared/notifications/notification.port';
 import { appendToOutbox } from '../../../shared/outbox/outbox.writer';
+import { KYC_APPROVED_EVENT, type KycApprovedPayload } from '../../kyc/application/kyc-events';
 import type { KycDecision, KycPort } from '../../kyc/application/kyc.port';
 import { kycApplications } from '../../kyc/infra/kyc.schema';
 import { emailVerifications, users } from '../infra/identity.schema';
 import { EMAIL_VERIFICATION_TTL_MS } from './email-verification.service';
-
-export const KYC_APPROVED_EVENT = 'kyc.approved';
 
 export interface RegisterInput {
   readonly email: string;
@@ -118,12 +117,13 @@ export class RegistrationService {
         .where(and(eq(kycApplications.userId, userId), eq(kycApplications.status, 'pending')));
 
       if (decision.outcome === 'approved') {
+        const payload: KycApprovedPayload = { userId, reference: decision.reference };
         const event = createDomainEvent(
           {
             type: KYC_APPROVED_EVENT,
             aggregateType: 'user',
             aggregateId: userId,
-            payload: { userId, reference: decision.reference },
+            payload,
           },
           { ids: this.ids, clock: this.clock },
         );

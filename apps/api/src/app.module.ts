@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { EnvModule } from './config/env.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
+import { AccountsModule } from './modules/accounts/accounts.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { LedgerModule } from './modules/ledger/ledger.module';
@@ -17,6 +18,7 @@ import { SharedModule } from './shared/shared.module';
     KycModule,
     LedgerModule,
     IdentityModule,
+    AccountsModule,
     OperationsModule,
   ],
 })

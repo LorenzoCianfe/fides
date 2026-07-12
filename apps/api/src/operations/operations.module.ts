@@ -3,7 +3,10 @@ import { ScheduleModule } from '@nestjs/schedule';
 import type { EventClock } from '@fides/domain';
 import { DRIZZLE } from '../database/database.module';
 import type { Database } from '../database/db.types';
+import { AccountsModule } from '../modules/accounts/accounts.module';
+import { AccountProvisioningService } from '../modules/accounts/application/account-provisioning.service';
 import { IdentitySweeper } from '../modules/identity/application/identity-sweeper';
+import { KYC_APPROVED_EVENT, type KycApprovedPayload } from '../modules/kyc/application/kyc-events';
 import {
   LEDGER_ENTRY_POSTED,
   type LedgerEntryPostedPayload,
@@ -20,16 +23,22 @@ import { OperationsScheduler } from './operations.scheduler';
  * the ADR-0021 retention sweeper, both driven by env-tunable intervals.
  */
 @Module({
-  imports: [ScheduleModule.forRoot(), LedgerModule],
+  imports: [ScheduleModule.forRoot(), LedgerModule, AccountsModule],
   providers: [
     {
       provide: OutboxDispatcher,
-      useFactory: (db: Database, projector: TransactionHistoryProjector): OutboxDispatcher =>
+      useFactory: (
+        db: Database,
+        projector: TransactionHistoryProjector,
+        provisioning: AccountProvisioningService,
+      ): OutboxDispatcher =>
         new OutboxDispatcher(db, {
           [LEDGER_ENTRY_POSTED]: (tx, payload) =>
             projector.project(tx, payload as LedgerEntryPostedPayload),
+          [KYC_APPROVED_EVENT]: (tx, payload) =>
+            provisioning.provisionForApprovedKyc(tx, payload as KycApprovedPayload),
         }),
-      inject: [DRIZZLE, TransactionHistoryProjector],
+      inject: [DRIZZLE, TransactionHistoryProjector, AccountProvisioningService],
     },
     {
       provide: IdentitySweeper,

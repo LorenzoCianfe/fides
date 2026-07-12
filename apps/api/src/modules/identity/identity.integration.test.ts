@@ -5,14 +5,11 @@ import { CapturingNotifications } from '../../../test/notifications';
 import { outbox } from '../../database/schema/outbox';
 import { UuidV7Generator } from '../../shared/ids/uuid-v7';
 import { SystemClock } from '../../shared/time/system-clock';
+import { KYC_APPROVED_EVENT } from '../kyc/application/kyc-events';
 import { MockKycAdapter } from '../kyc/infra/mock-kyc.adapter';
 import { kycApplications } from '../kyc/infra/kyc.schema';
 import { EmailVerificationService } from './application/email-verification.service';
-import {
-  KYC_APPROVED_EVENT,
-  RegistrationService,
-  type RegisterInput,
-} from './application/registration.service';
+import { RegistrationService, type RegisterInput } from './application/registration.service';
 import { users } from './infra/identity.schema';
 
 const ids = new UuidV7Generator();
