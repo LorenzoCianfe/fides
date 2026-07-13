@@ -4,16 +4,16 @@
 |---|---|
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) |
 | Branch | `phase-1-walking-skeleton` — not yet PR'd (single PR at phase end) |
-| Verified | `apps/api` 102/102 tests green; lint, typecheck, and production build clean |
+| Verified | `apps/api` 115/115 tests green; lint, typecheck, and production build clean |
 | Last updated | 2026-07-12 |
 
-> Resume point: **Slice 5 (P2P transfer + dev funding)**. Read §4 (locked decisions) before writing code — in particular the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) and the SCA grant contract the transfer must consume (`consumeScaGrant` inside the posting transaction, ADR-0021). Slice 5 credits/debits the **wallet ledger accounts** provisioned in Slice 4 (`wallet:<walletId>`, liability) and funds from `system:settlement` (asset). Auth policy is pinned in ADR-0020/ADR-0021; the account model in ADR-0022.
+> Resume point: **Slice 6 (hash-chained audit trail)**. Slice 5 (SCA-gated P2P transfer + dev funding + wallet transaction history, ADR-0023) is **done**. Read §4 (locked decisions) before writing code — the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) holds for all new surface. Slice 6 wires an append-only, hash-chained audit trail into the sensitive actions now in place (transfer, funding, step-up, session revocation) and lets us revisit the ADR-0021 90-day session-retention grace once audit exists. Auth policy is pinned in ADR-0020/0021; the account model in ADR-0022; the transfer/funding/history decisions in ADR-0023.
 
 ---
 
 ## 1. One-paragraph orientation
 
-Phase 1 is built **backend-first** ("API + tests first, clients after"). The double-entry **ledger** (Slices 1–2), the whole of **Slice 3** — identity onboarding (Wave A), WebAuthn relying party + server-side sessions (Wave B, ADR-0020), and the **`/v1/auth` HTTP surface with SCA step-up, throttling, and operational schedulers** (Wave C, ADR-0021) — and **Slice 4** (accounts & wallets: event-driven idempotent provisioning off `kyc.approved` + the `/v1/accounts` read surface, ADR-0022) are complete. Everything runs against a real Postgres via Testcontainers, including full HTTP journeys driven through supertest by a software authenticator producing genuine attestations and assertions. `pnpm test` requires a running Docker daemon. Continue at Slice 5; §5 has the concrete next steps.
+Phase 1 is built **backend-first** ("API + tests first, clients after"). The double-entry **ledger** (Slices 1–2), the whole of **Slice 3** — identity onboarding (Wave A), WebAuthn relying party + server-side sessions (Wave B, ADR-0020), and the **`/v1/auth` HTTP surface with SCA step-up, throttling, and operational schedulers** (Wave C, ADR-0021) — **Slice 4** (accounts & wallets: event-driven idempotent provisioning off `kyc.approved` + the `/v1/accounts` read surface, ADR-0022), and **Slice 5** (the SCA-gated, idempotent internal P2P transfer, a kill-switched dev funding faucet, and the wallet transaction-history read, ADR-0023) are complete. Everything runs against a real Postgres via Testcontainers, including full HTTP journeys driven through supertest by a software authenticator producing genuine attestations and assertions — the transfer suite runs the real step-up ceremony end to end. `pnpm test` requires a running Docker daemon. Continue at Slice 6; §5 has the concrete next steps.
 
 ## 2. Status by slice
 
@@ -22,8 +22,8 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 | 1 | Ledger domain core | Done | `c7b3379` |
 | 2 | Ledger persistence + async projection | Done | `4872171`, `3a05853` |
 | 3 | Identity, WebAuthn, sessions, HTTP surface + SCA | Done (Waves A `0a274b8`, B `ea42e01`, C `faaf649`) | see git log |
-| 4 | Accounts & wallets | **Done** (this session) | see git log |
-| 5 | P2P transfer + dev funding | Not started | — |
+| 4 | Accounts & wallets | Done | see git log |
+| 5 | P2P transfer + dev funding | **Done** (this session) | see git log |
 | 6 | Audit trail (hash-chained) | Not started | — |
 | 7 | Admin RBAC + MFA + four-eyes | Not started | — |
 | 8 | Clients (web + mobile) | Not started | — |
@@ -52,6 +52,13 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 - `application/account.service.ts` — read side: `listAccounts` (principal-scoped) and `getAccount` (ownership-asserted); each wallet's live balance comes from `LedgerStore.getBalance`.
 - `http/accounts.controller.ts` — `GET /v1/accounts`, `GET /v1/accounts/:accountId` (`SessionAuthGuard`, `CurrentPrincipal`, explicit `ZodValidationPipe`). `accounts.module.ts` binds the services by factory and exports `AccountProvisioningService` for the dispatcher.
 - Enabling change: `LedgerStore.createAccount` takes an optional `executor` (enlist in a caller's tx, like `SessionService.issueSession`); `kyc.approved` now has a typed payload in `kyc/application/kyc-events.ts`.
+- Slice 5 additions: `application/wallet-resolver.ts` (`WalletResolver` — resolve the caller's primary EUR wallet, resolve a recipient by email, and resolve an owned wallet for the history read to its `ledger_account_id`, all ownership-aware; the `ledger_account_id` never leaves the module) and `http/wallets.controller.ts` (`GET /v1/wallets/:walletId/transactions`, ownership-scoped, cursor-paginated). Both exported/wired in `accounts.module.ts`.
+
+**Payments** (`apps/api/src/modules/payments`) — Slice 5, ADR-0023
+- `application/transfer.service.ts` — `TransferService`: validates and resolves sender/recipient EUR wallets, rejects self-transfer and non-EUR, recomputes the action hash from the **executed** amount+payee via the shared `buildTransferScaAction` (never from a client action), and posts `Dr sender / Cr recipient` (sender guarded) through `PostingService.post`, consuming the single-use grant in the posting transaction via the new `onClaimed` hook. Idempotency: `actorId=userId`, `key=Idempotency-Key`, fingerprint over `{recipient, amount, currency}` (grant excluded).
+- `application/funding.service.ts` — `FundingService`: the dev faucet. Kill-switch + cap checked first, then `Dr system:settlement / Cr caller-wallet` (unguarded settlement) via `PostingService.post`, no SCA. `ensureSystemAccount` lazily creates `system:settlement`.
+- `http/transfers.controller.ts` (`POST /v1/transfers`), `http/dev-funding.controller.ts` (`POST /v1/dev/funding`), `http/idempotency-key.ts` (required-header helper → 400 if missing), `http/dtos.ts`. `payments.module.ts` binds the services by factory with explicit `@Inject` tokens and a module-scoped throttler (same `THROTTLE_ENABLED` kill-switch); registered in `app.module.ts` and `openapi/build-document.ts`.
+- Ledger enabling change: `PostEntryCommand` gained an optional **`onClaimed(tx, now)`** hook that `PostingService.post` runs after a successful idempotency claim and before any ledger write — so the SCA grant is consumed exactly once (replays skip it) and atomically with the post. New `application/transaction-history.reader.ts` (`TransactionHistoryReader`, keyset pagination) backs the wallet history endpoint; both wired in `ledger.module.ts`. No new migration (every table already existed).
 
 **Platform** (`apps/api/src`)
 - `app.setup.ts` `configureApp` — shared by `main.ts` and tests: correlation-id middleware (honor well-formed inbound, else UUID v7; echoed; feeds the error envelope), `/v1` prefix (`/health` excluded), CORS allowlist (`CORS_ORIGINS` ?? `WEBAUTHN_ORIGINS`), global `ZodValidationPipe` + `DomainExceptionFilter` (now maps 429 → `RATE_LIMITED` and unwraps nestjs-zod issues), OpenAPI at `/docs` (`/docs-json`).
@@ -63,9 +70,9 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 - `auth/` — Zod-first request/response schemas (`primitives`, `registration`, `webauthn`, `session`, `sca`); client-submitted WebAuthn payloads use `.passthrough()` so validation never strips spec fields; server-issued options are documentation-shaped. `auth/paths.ts` registers all `/v1/auth/*` paths + the bearer security scheme.
 - `accounts/` — `account.ts` (`Account`, `Wallet` with a `Money` balance, `AccountList`, `AccountIdParams`) and `accounts/paths.ts` (`registerAccountPaths`, `/v1/accounts` + `/v1/accounts/{accountId}`). Registrars are consumed by `apps/api/src/openapi/build-document.ts`.
 
-**Tests** (102 total) — everything under `corepack pnpm --filter @fides/api test`:
-- Service-level integration: ledger (posting, projection, unknown-event pending), identity (onboarding, email-keyed verify, resend), auth (WebAuthn/session scenarios incl. re-issue path and session listing), SCA (dynamic-linking scenarios), sweeper (retention semantics), **account provisioning (provision on `kyc.approved`, idempotent redelivery, per-user backlog drain)**.
-- HTTP integration (supertest against the real `AppModule`): full auth journey, error envelope, anti-enumeration, correlation ids, versioning, OpenAPI; throttling (dedicated app, kill-switch on); armed schedulers (dead row swept by the interval); **accounts (`/v1/accounts` provisioning-then-read, zero EUR wallet, owner scoping incl. 401/403/404, OpenAPI presence)**.
+**Tests** (115 total) — everything under `corepack pnpm --filter @fides/api test`:
+- Service-level integration: ledger (posting, projection, unknown-event pending), identity (onboarding, email-keyed verify, resend), auth (WebAuthn/session scenarios incl. re-issue path and session listing), SCA (dynamic-linking scenarios), sweeper (retention semantics), account provisioning (provision on `kyc.approved`, idempotent redelivery, per-user backlog drain), **dev-funding gating (kill-switch, cap, non-positive/non-EUR)**.
+- HTTP integration (supertest against the real `AppModule`): full auth journey, error envelope, anti-enumeration, correlation ids, versioning, OpenAPI; throttling (dedicated app, kill-switch on); armed schedulers (dead row swept by the interval); accounts (`/v1/accounts` provisioning-then-read, zero EUR wallet, owner scoping incl. 401/403/404, OpenAPI presence); **payments (`/v1/transfers` two-user funded transfer with balance movement and ledger zero-sum, idempotent replay, dynamic-linking tamper rejection, single-use grant, overdraft, self-transfer, missing key; dev funding cap + auth; ownership-scoped paginated wallet history) driven through the real step-up ceremony**.
 - Unit: canonical stringify, correlation middleware, auth guard, health.
 
 ## 4. Locked decisions (constraints for the rest of Phase 1)
@@ -75,7 +82,10 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 | Auth realism | Full passkeys on web AND mobile (native passkeys need a custom Expo dev build) | Slice 8 |
 | Sessions / tokens | Server-side sessions; opaque hashed tokens; rotation with reuse detection | ADR-0020 (done) |
 | Token transport | **Body-only in Phase 1; bearer header for access. httpOnly-cookie mode deferred to Slice 8** | ADR-0021 |
-| SCA step-up | **Action-hashed `sca` challenge → fresh assertion → single-use grant; Slice 5 calls `consumeScaGrant` inside the posting transaction** | ADR-0021 (seam done) |
+| SCA step-up | Action-hashed `sca` challenge → fresh assertion → single-use grant; **consumed inside the posting transaction via `PostEntryCommand.onClaimed`, enforced on the P2P transfer** | ADR-0021/0023 (done) |
+| P2P transfer | SCA-gated, idempotent (`Idempotency-Key` → per-actor table); action hash recomputed from executed params (dynamic linking); recipient by email; `Dr sender / Cr recipient`, sender guarded | ADR-0023 (done) |
+| Dev funding | Self-service faucet from `system:settlement` (asset), kill-switched (`DEV_FUNDING_ENABLED`, off by default) + capped, no SCA; interim until admin RBAC | ADR-0023 (done) |
+| Transaction history | Wallet-scoped `GET /v1/wallets/:walletId/transactions`, ownership-scoped, keyset-paginated; balance stays on the account resource | ADR-0023 (done) |
 | Enumeration posture | Login decoys + uniform email-keyed verify/resend; **registration keeps explicit 409** (throttled) | ADR-0020/0021 |
 | Rate limiting | `@nestjs/throttler` in-memory, module-scoped, `THROTTLE_ENABLED` kill-switch | ADR-0021 (done) |
 | Retention | Dead secrets purged promptly; dead sessions kept 90 days (until Slice 6 audit) | ADR-0021 (done) |
@@ -91,16 +101,16 @@ Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` 
 
 ## 5. Next steps
 
-### Slice 4 — Accounts & wallets — DONE (this session, ADR-0022)
+### Slice 4 — Accounts & wallets — DONE (ADR-0022)
 - `kyc.approved` handler registered in the `OperationsModule` dispatcher registry; provisions one EUR account + wallet + backing ledger account (`wallet:<walletId>`, liability) via `LedgerStore.createAccount`, atomically in the dispatcher tx and idempotently.
 - `accounts` module: `accounts`/`wallets` schema (migration `0007`), provisioning + read services, `GET /v1/accounts` and `GET /v1/accounts/:accountId` under the Wave C conventions; contracts + paths in `@fides/contracts`; service and HTTP integration tests.
 
-### Slice 5 — P2P transfer + dev funding (NEXT)
-- Idempotent (`Idempotency-Key` header → per-actor idempotency table), **SCA-gated** transfer: recompute the action hash from the transfer payload and call `consumeScaGrant(tx, { userId, sessionId, grant, actionHash, now })` inside the same transaction as `PostingService.post` (`Dr sender / Cr recipient`, sender wallet guarded). Resolve sender/recipient wallets → their `ledger_account_id` (the `wallet:<walletId>` accounts provisioned in Slice 4).
-- Dev/admin funding from `system:settlement` (asset); balance + transaction-history read endpoints (the account resource already exposes the current wallet balance; Slice 5 adds history and makes the balance move). This proves the Phase 1 exit criteria end to end.
+### Slice 5 — P2P transfer + dev funding — DONE (this session, ADR-0023)
+- Idempotent (`Idempotency-Key` → per-actor table), **SCA-gated** transfer (`POST /v1/transfers`): recomputes the action hash from the executed payload via the shared `buildTransferScaAction` and calls `consumeScaGrant(tx, …)` inside the `PostingService.post` transaction through the new `PostEntryCommand.onClaimed(tx, now)` hook (`Dr sender / Cr recipient`, sender guarded). Grant consumed exactly once; idempotent replay skips it. Recipient by email; fingerprint over `{recipient, amount, currency}`.
+- Dev funding faucet (`POST /v1/dev/funding`) from `system:settlement` (asset, unguarded), kill-switched (`DEV_FUNDING_ENABLED`, off by default) + capped, no SCA. Wallet transaction-history read (`GET /v1/wallets/:walletId/transactions`), ownership-scoped + keyset-paginated. Balance stays on the account resource. Service + HTTP integration tests (real step-up ceremony, ledger zero-sum). Proves the Phase 1 exit criteria end to end. No new migration.
 
 ### Slices 6–8 (per `roadmap.md`)
-- **6 Audit:** append-only, hash-chained audit trail; wire into sensitive actions; revisit the ADR-0021 session-retention grace once audit exists.
+- **6 Audit (NEXT):** append-only, hash-chained audit trail; wire into the sensitive actions now in place (transfer, funding, step-up, session revocation); revisit the ADR-0021 session-retention grace once audit exists.
 - **7 Admin:** RBAC, segregation of duties, four-eyes, admin MFA (TOTP), read-only views.
 - **8 Clients:** web + mobile with full passkeys; add the httpOnly-cookie transport mode for web (ADR-0021) plus security headers (helmet/HSTS); Playwright happy-path; i18n scaffolding.
 
@@ -121,7 +131,7 @@ Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` 
 ```bash
 # with Docker running:
 corepack pnpm --filter @fides/contracts build   # if contracts changed
-corepack pnpm --filter @fides/api test          # 95 tests (Testcontainers Postgres)
+corepack pnpm --filter @fides/api test          # 115 tests (Testcontainers Postgres)
 corepack pnpm --filter @fides/api typecheck
 corepack pnpm --filter @fides/api lint
 corepack pnpm --filter @fides/api build
@@ -135,6 +145,8 @@ Manual smoke: `pnpm stack:up`, set `.env`, run `corepack pnpm --filter @fides/ap
 - **Security headers (helmet/HSTS) not yet applied** — arrives with the clients/TLS story in Slice 8.
 - **Throttle counters are in-memory** — reset on restart, per-instance only; storage seam ready for Redis if topology changes.
 - **Registration 409 remains an enumeration channel by design** (throttled; ADR-0021).
+- **Dev funding faucet (`POST /v1/dev/funding`) is real money-movement surface**, gated only by `DEV_FUNDING_ENABLED` (off by default) and a per-request cap; it credits only the caller's own wallet and carries no SCA. Keep it disabled in shared environments; replace it with an admin-only, four-eyes funding operation when admin RBAC lands (Slice 7). ADR-0023.
+- **The transfer route exposes a throttled recipient-existence oracle** (an unknown recipient email is a 404), accepted as consistent with the registration-409 posture and mitigated by mandatory SCA + throttling; superseded when public payment handles (`@tag`) replace email as the P2P identifier (roadmap Phase 2). ADR-0023.
 - Redis is still unused (sessions/challenges/idempotency are Postgres-backed; any Redis fast-path must preserve immediate revocation, ADR-0020).
 - Device metadata is client-declared and untrusted until mobile attestation (Slice 8).
 - WebAuthn **server-issued options schemas** in contracts are documentation-shaped (responses are not runtime-validated); client-submitted payloads are validated with `.passthrough()`.

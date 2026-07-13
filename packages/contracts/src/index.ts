@@ -11,4 +11,8 @@ export * from './auth/webauthn';
 export * from './auth/sca';
 export * from './auth/paths';
 export * from './accounts/account';
+export * from './accounts/transactions';
 export * from './accounts/paths';
+export * from './payments/transfer';
+export * from './payments/funding';
+export * from './payments/paths';

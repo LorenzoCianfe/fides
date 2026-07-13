@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Document | Security architecture and controls |
-| Version | 0.3.0 |
+| Version | 0.4.0 |
 | Status | Living — Phase 1 controls landing |
 | Regulatory frame | EU/EEA: PSD2/SCA, GDPR (simulated, unlicensed) |
 | Last updated | 2026-07-12 |
@@ -39,7 +39,8 @@ Note on status: Fides is a simulated core and not a licensed institution. Real c
 - Login and sensitive operations require two independent factors from the categories knowledge, possession, and inherence.
 - **Step-up SCA** is enforced for high-risk actions: outbound payments, adding payees, changing security settings, raising limits, and sensitive card actions.
 - SCA is designed with dynamic linking in mind for payment operations (authentication bound to amount and payee).
-- Implemented (Phase 1, ADR-0020/0021): every WebAuthn assertion requires user verification (two factors per ceremony); the step-up seam binds an action-hashed challenge to a fresh assertion and mints a single-use grant that the guarded operation consumes atomically — dynamic linking in effect, first enforced on the P2P transfer.
+- Implemented (Phase 1, ADR-0020/0021): every WebAuthn assertion requires user verification (two factors per ceremony); the step-up seam binds an action-hashed challenge to a fresh assertion and mints a single-use grant that the guarded operation consumes atomically.
+- Implemented (Phase 1 Slice 5, ADR-0023): dynamic linking is now **enforced on the internal P2P transfer**. The server recomputes the action hash from the *executed* amount and payee (never from a client-supplied action) and consumes the single-use grant inside the posting transaction, so a tampered amount or payee changes the hash and fails with the generic authentication error; the grant is consumed exactly once and idempotent retries neither re-consume it nor re-post.
 
 ### 2.3 Sessions
 
@@ -55,6 +56,7 @@ Note on status: Fides is a simulated core and not a licensed institution. Real c
 - Every API request is authorized server-side against the authenticated principal and resource ownership. Object-level checks prevent access to another user's accounts, cards, or data.
 - Input is validated against shared Zod schemas; the API never trusts client-supplied identifiers implicitly.
 - Implemented (Phase 1, Slice 4): the `/v1/accounts` read surface is session-guarded and ownership-scoped — the list is bound to the authenticated principal and the single-account read resolves the owner server-side and asserts ownership (`assertResourceOwnership`), so one user's account id cannot be used to read another's. Account identifiers are non-enumerable UUID v7.
+- Implemented (Phase 1, Slice 5, ADR-0023): the wallet transaction-history read (`GET /v1/wallets/{walletId}/transactions`) resolves the wallet to its owner server-side and asserts ownership before returning any history, so a wallet id cannot be used to read another user's transactions. The P2P transfer and dev funding are money-moving operations and require an `Idempotency-Key`. The dev funding faucet (`POST /v1/dev/funding`) credits only the caller's own wallet, is amount-capped, and is gated by `DEV_FUNDING_ENABLED` (off by default; answers 404 when disabled) — an explicit, controlled development affordance to be replaced by an admin-only, four-eyes funding operation when admin RBAC lands (Slice 7). It must remain disabled in shared environments.
 
 ### 3.2 Admin authorization (back office)
 
@@ -161,6 +163,7 @@ Fides is not a licensed institution; this mapping documents how the design align
 
 | Version | Date | Change |
 |---|---|---|
+| 0.4.0 | 2026-07-12 | Phase 1 Slice 5: PSD2 dynamic linking enforced on the internal P2P transfer (server-side action-hash recomputation, single-use grant consumed atomically in the posting transaction); object-level authorization on the wallet transaction-history read; dev funding faucet documented as a kill-switched, self-scoped interim control until admin RBAC (ADR-0023). |
 | 0.3.0 | 2026-07-12 | Phase 1 Slice 4: object-level authorization enforced on the `/v1/accounts` customer resource (session guard + server-side ownership assertion); account provisioning is event-driven and idempotent (ADR-0022). |
 | 0.2.0 | 2026-07-06 | Phase 1 Slice 3 controls implemented and annotated: passkey/WebAuthn two-factor ceremonies with anti-enumeration, opaque server-side sessions with immediate revocation (ADR-0020); SCA step-up with dynamic linking, auth rate limiting, and the retention sweeper (ADR-0021). |
 | 0.1.0 | 2026-07-04 | Initial security model: identity, authz, KYC/AML, monitoring, data protection, audit, SDLC, threat model. |

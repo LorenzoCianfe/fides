@@ -1,4 +1,13 @@
-import type { AccountDto, WalletDto } from '@fides/contracts';
+import type {
+  AccountDto,
+  TransactionItemDto,
+  WalletDto,
+  WalletTransactionsPageDto,
+} from '@fides/contracts';
+import type {
+  TransactionHistoryEntry,
+  TransactionHistoryPage,
+} from '../../ledger/application/transaction-history.reader';
 import type { Account, Wallet } from '../domain';
 
 /** Serialize an account domain view onto the wire contract. */
@@ -17,5 +26,25 @@ function toWalletDto(wallet: Wallet): WalletDto {
     currency: wallet.currency,
     // Money.toJSON() yields the MoneyDto shape: integer minor units as a string.
     balance: wallet.balance.toJSON(),
+  };
+}
+
+/** Serialize a wallet's transaction-history page onto the wire contract. */
+export function toWalletTransactionsPageDto(
+  page: TransactionHistoryPage,
+): WalletTransactionsPageDto {
+  return {
+    items: page.items.map(toTransactionItemDto),
+    nextCursor: page.nextCursor,
+  };
+}
+
+function toTransactionItemDto(entry: TransactionHistoryEntry): TransactionItemDto {
+  return {
+    id: entry.id,
+    type: entry.type,
+    amount: entry.amount.toJSON(),
+    balanceAfter: entry.balanceAfter.toJSON(),
+    occurredAt: entry.occurredAt.toISOString(),
   };
 }

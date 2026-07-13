@@ -6,6 +6,7 @@ import { AccountsModule } from './modules/accounts/accounts.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { LedgerModule } from './modules/ledger/ledger.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import { OperationsModule } from './operations/operations.module';
 import { SharedModule } from './shared/shared.module';
 
@@ -19,6 +20,7 @@ import { SharedModule } from './shared/shared.module';
     LedgerModule,
     IdentityModule,
     AccountsModule,
+    PaymentsModule,
     OperationsModule,
   ],
 })

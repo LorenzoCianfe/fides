@@ -52,6 +52,17 @@ export const envSchema = z.object({
   OUTBOX_DISPATCH_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
   /** How often dead security rows are swept (retention per ADR-0021). */
   CLEANUP_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /**
+   * Kill-switch for the dev funding faucet (ADR-0023). Off by default; a
+   * development affordance until admin RBAC (Slice 7). Keep disabled in shared
+   * environments.
+   */
+  DEV_FUNDING_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Maximum minor units a single dev-funding request may credit. */
+  DEV_FUNDING_MAX_MINOR: z.coerce.number().int().positive().default(1_000_000),
 });
 
 export type Env = z.infer<typeof envSchema>;

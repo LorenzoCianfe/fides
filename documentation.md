@@ -5,10 +5,10 @@
 | Field | Value |
 |---|---|
 | Document | Master platform documentation |
-| Version | 0.7.0 |
+| Version | 0.8.0 |
 | Status | Phase 1 (Walking skeleton) — in progress |
 | Scope | Simulated-core EU neobank (iOS, Android, web) + admin back office |
-| Last updated | 2026-07-06 |
+| Last updated | 2026-07-12 |
 
 ---
 
@@ -206,6 +206,7 @@ ADRs are maintained under `docs/adr/` (see the [index](docs/adr/README.md)). The
 | 0020 | Opaque server-side session tokens and WebAuthn ceremony policy (refines 0007) | Accepted |
 | 0021 | HTTP auth surface: token transport, SCA dynamic linking, throttling, retention (refines 0007, 0020) | Accepted |
 | 0022 | Account provisioning and the account/wallet/ledger-account model (refines 0005, 0019) | Accepted |
+| 0023 | Internal P2P transfer: SCA enforcement, dev funding, and the transaction-history read (refines 0019, 0021, 0022) | Accepted |
 
 ## 9. Versioning and change log
 
@@ -220,6 +221,7 @@ The platform follows semantic versioning. This document's version tracks documen
 | 0.5.0 | 2026-07-06 | Phase 1 Slice 3 Wave B: WebAuthn relying party (passkey registration and email-first authentication, UV required, anti-enumeration decoys) and server-side sessions (opaque hashed tokens, rotation with reuse detection, immediate revocation), enrolment-token-gated first passkey, auth guard and ownership helper. ADR-0020 added. |
 | 0.6.0 | 2026-07-06 | Phase 1 Slice 3 Wave C: the `/v1/auth` HTTP surface (registration, email-keyed verification and resend, WebAuthn ceremonies, session refresh/logout/list/revoke) with Zod contracts and generated OpenAPI; SCA step-up seam with PSD2 dynamic linking (action-hashed challenges, single-use grants); auth rate limiting; correlation-id middleware, CORS, and `/v1` versioning; scheduled outbox dispatch and retention sweeper. ADR-0021 added. Slice 3 complete. |
 | 0.7.0 | 2026-07-12 | Phase 1 Slice 4: accounts & wallets. Event-driven, idempotent account provisioning consumes `kyc.approved` inside the outbox dispatcher's transaction, creating one EUR account + a single wallet + a backing ledger account (`wallet:<walletId>`, liability). Account read surface (`GET /v1/accounts`, `GET /v1/accounts/{accountId}`) with live balances read from the authoritative ledger projection (ADR-0019), session-guarded and ownership-scoped. ADR-0022 added. |
+| 0.8.0 | 2026-07-12 | Phase 1 Slice 5: internal instant P2P transfer + dev funding. `POST /v1/transfers` — idempotent, SCA-gated transfer with PSD2 dynamic linking enforced inside the posting transaction (action hash recomputed from the executed amount/payee; single-use grant consumed via a new `onClaimed` hook so it fires exactly once and replays skip it). Kill-switched dev funding faucet (`POST /v1/dev/funding`) and a keyset-paginated, ownership-scoped wallet transaction history (`GET /v1/wallets/{walletId}/transactions`). Proves the Phase 1 exit criteria end to end (115 tests). ADR-0023 added. |
 
 ## 10. Glossary
 

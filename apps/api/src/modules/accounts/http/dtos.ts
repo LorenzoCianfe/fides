@@ -1,4 +1,8 @@
-import { AccountIdParamsSchema } from '@fides/contracts';
+import {
+  AccountIdParamsSchema,
+  PaginationQuerySchema,
+  WalletIdParamsSchema,
+} from '@fides/contracts';
 import { createZodDto } from 'nestjs-zod';
 
 /**
@@ -6,3 +10,7 @@ import { createZodDto } from 'nestjs-zod';
  * Contracts stay framework-free; only this file knows Nest.
  */
 export class AccountIdParamsDto extends createZodDto(AccountIdParamsSchema) {}
+
+export class WalletIdParamsDto extends createZodDto(WalletIdParamsSchema) {}
+
+export class PaginationQueryDto extends createZodDto(PaginationQuerySchema) {}

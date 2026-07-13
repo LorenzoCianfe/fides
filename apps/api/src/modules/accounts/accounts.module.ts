@@ -8,7 +8,9 @@ import { LedgerStore } from '../ledger/infra/ledger.repository';
 import { LedgerModule } from '../ledger/ledger.module';
 import { AccountProvisioningService } from './application/account-provisioning.service';
 import { AccountService } from './application/account.service';
+import { WalletResolver } from './application/wallet-resolver';
 import { AccountsController } from './http/accounts.controller';
+import { WalletsController } from './http/wallets.controller';
 
 /**
  * Accounts module (Slice 4): account and wallet structure. Provisioning runs
@@ -19,7 +21,7 @@ import { AccountsController } from './http/accounts.controller';
  */
 @Module({
   imports: [LedgerModule, IdentityModule],
-  controllers: [AccountsController],
+  controllers: [AccountsController, WalletsController],
   providers: [
     {
       provide: AccountProvisioningService,
@@ -33,7 +35,12 @@ import { AccountsController } from './http/accounts.controller';
         new AccountService(db, ledger),
       inject: [DRIZZLE, LedgerStore],
     },
+    {
+      provide: WalletResolver,
+      useFactory: (db: Database): WalletResolver => new WalletResolver(db),
+      inject: [DRIZZLE],
+    },
   ],
-  exports: [AccountProvisioningService, AccountService],
+  exports: [AccountProvisioningService, AccountService, WalletResolver],
 })
 export class AccountsModule {}

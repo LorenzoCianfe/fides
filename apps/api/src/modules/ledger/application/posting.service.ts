@@ -8,7 +8,7 @@ import {
   type IdGenerator,
 } from '@fides/domain';
 import { eq, inArray, sql } from 'drizzle-orm';
-import type { Database } from '../../../database/db.types';
+import type { Database, DatabaseTx } from '../../../database/db.types';
 import {
   claimIdempotencyKey,
   completeIdempotencyKey,
@@ -25,6 +25,15 @@ export interface PostEntryCommand {
   /** Accounts on which a negative resulting balance must be rejected. */
   readonly guardAccountIds: readonly string[];
   readonly idempotency: IdempotencyContext;
+  /**
+   * Optional step run inside the posting transaction on the first (claiming)
+   * execution only — never on an idempotent replay. Slice 5 uses it to consume
+   * the SCA grant atomically with the posting (ADR-0021/0023): throwing here
+   * rolls back the whole transaction, including the idempotency claim, so the
+   * key is freed for a fresh attempt and the grant is left unconsumed. Runs
+   * before any ledger write.
+   */
+  readonly onClaimed?: (tx: DatabaseTx, now: Date) => Promise<void>;
 }
 
 export interface AccountBalanceResult {
@@ -64,7 +73,7 @@ export class PostingService {
   ) {}
 
   async post(command: PostEntryCommand): Promise<PostEntryResult> {
-    const { entry, guardAccountIds, idempotency } = command;
+    const { entry, guardAccountIds, idempotency, onClaimed } = command;
 
     return this.db.transaction(async (tx) => {
       const now = this.clock.now();
@@ -73,6 +82,10 @@ export class PostingService {
       if (!claim.claimed) {
         return { ...(claim.responseBody as StoredResult), replayed: true };
       }
+
+      // First execution only: authorize (e.g. consume the SCA grant) atomically
+      // with the posting. A replay returned above, so this never runs twice.
+      if (onClaimed) await onClaimed(tx, now);
 
       const accountIds = [...new Set(entry.postings.map((posting) => posting.accountId))].sort();
 

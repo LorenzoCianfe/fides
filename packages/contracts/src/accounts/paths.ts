@@ -1,9 +1,12 @@
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from '../zod';
 import { ErrorResponseSchema } from '../common/error';
+import { PaginationQuerySchema } from '../common/pagination';
 import { AccountListResponseSchema, AccountSchema } from './account';
+import { WalletTransactionsPageSchema } from './transactions';
 
 const TAG_ACCOUNTS = 'accounts';
+const TAG_WALLETS = 'wallets';
 const bearer = [{ bearerAuth: [] }];
 
 function jsonResponse(description: string, schema: z.ZodTypeAny) {
@@ -45,6 +48,25 @@ export function registerAccountPaths(registry: OpenAPIRegistry): void {
       401: errorResponse('Not authenticated'),
       403: errorResponse('Not the owner of this account'),
       404: errorResponse('Account not found'),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/v1/wallets/{walletId}/transactions',
+    summary: 'List a wallet’s transaction history',
+    description: 'Ownership-scoped and cursor-paginated. Another user’s wallet id resolves to 403.',
+    tags: [TAG_WALLETS],
+    security: bearer,
+    request: {
+      params: z.object({ walletId: z.string().uuid() }),
+      query: PaginationQuerySchema,
+    },
+    responses: {
+      200: jsonResponse('A page of transactions, newest first', WalletTransactionsPageSchema),
+      401: errorResponse('Not authenticated'),
+      403: errorResponse('Not the owner of this wallet'),
+      404: errorResponse('Wallet not found'),
     },
   });
 }
