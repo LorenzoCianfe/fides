@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Headers,
   HttpCode,
   HttpStatus,
   Inject,
@@ -136,9 +137,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   async refresh(
+    @Headers('x-correlation-id') correlationId: string | undefined,
     @Body(new ZodValidationPipe(RefreshDto)) body: RefreshDto,
   ): Promise<SessionResponseDto> {
-    return toSessionDto(await this.sessions.refresh(body.refreshToken));
+    return toSessionDto(await this.sessions.refresh(body.refreshToken, correlationId));
   }
 
   /**

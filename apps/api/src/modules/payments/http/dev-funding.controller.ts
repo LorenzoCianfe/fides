@@ -26,12 +26,14 @@ export class DevFundingController {
   async create(
     @CurrentPrincipal() principal: Principal,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-correlation-id') correlationId: string | undefined,
     @Body(new ZodValidationPipe(DevFundingRequestDto)) body: DevFundingRequestDto,
   ): Promise<DevFundingResponseDto> {
     const result = await this.funding.fund({
       principal,
       amount: body.amount,
       idempotencyKey: requireIdempotencyKey(idempotencyKey),
+      correlationId,
     });
     return {
       fundingId: result.fundingId,

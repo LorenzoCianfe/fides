@@ -5,6 +5,7 @@ import { createTestDb, resetDb, type TestDatabase } from '../../../test/db';
 import { CapturingNotifications } from '../../../test/notifications';
 import { SoftwareAuthenticator, type AuthenticationCeremonyInput } from '../../../test/webauthn';
 import { UuidV7Generator } from '../../shared/ids/uuid-v7';
+import { AuditService } from '../audit/application/audit.service';
 import { MockKycAdapter } from '../kyc/infra/mock-kyc.adapter';
 import { EmailVerificationService } from './application/email-verification.service';
 import { RegistrationService, type RegisterInput } from './application/registration.service';
@@ -43,8 +44,9 @@ const emailVerification = new EmailVerificationService(
   clock,
   notifications,
 );
-const sessions = new SessionService(db as TestDatabase, ids, clock);
-const webauthn = new WebAuthnService(db as TestDatabase, ids, clock, sessions, RP);
+const audit = new AuditService(db as TestDatabase, ids, clock);
+const sessions = new SessionService(db as TestDatabase, ids, clock, audit);
+const webauthn = new WebAuthnService(db as TestDatabase, ids, clock, sessions, RP, audit);
 
 const baseInput: Omit<RegisterInput, 'email'> = {
   givenName: 'Alice',

@@ -1,11 +1,8 @@
 import type { EventClock } from '@fides/domain';
-import { and, isNotNull, lte, or } from 'drizzle-orm';
+import { isNotNull, lte, or } from 'drizzle-orm';
 import type { Database } from '../../../database/db.types';
 import { enrolmentTokens, scaGrants, sessions, webauthnChallenges } from '../infra/auth.schema';
 import { emailVerifications } from '../infra/identity.schema';
-
-/** Dead sessions keep forensic value until the audit trail lands (ADR-0021). */
-export const DEAD_SESSION_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 export interface SweepResult {
   readonly scaGrants: number;
@@ -16,11 +13,14 @@ export interface SweepResult {
 }
 
 /**
- * Deletes dead security rows per the ADR-0021 retention policy: consumed or
- * expired one-time secrets are purged promptly (hashed rows with no audit
- * value), dead sessions only after a 90-day forensic grace. SCA grants go
- * first — they reference sessions, and their 5-minute TTL guarantees any grant
- * of a 90-day-dead session is itself long dead.
+ * Deletes dead security rows per the retention policy (ADR-0021, tightened by
+ * ADR-0024): consumed or expired one-time secrets and dead sessions are all
+ * purged promptly. Dead sessions no longer keep a 90-day forensic grace — their
+ * revocation and refresh-reuse events now live in the tamper-evident audit
+ * trail, which carries the session, device, reason, and timestamps. SCA grants
+ * are still swept before sessions (they reference session rows), and their
+ * 5-minute TTL guarantees any grant of a dead session is itself long dead. The
+ * audit trail is append-only and is never swept.
  */
 export class IdentitySweeper {
   constructor(
@@ -30,7 +30,6 @@ export class IdentitySweeper {
 
   async sweep(): Promise<SweepResult> {
     const now = this.clock.now();
-    const sessionDeadline = new Date(now.getTime() - DEAD_SESSION_RETENTION_MS);
 
     const grants = await this.db
       .delete(scaGrants)
@@ -52,13 +51,15 @@ export class IdentitySweeper {
       .where(or(isNotNull(emailVerifications.consumedAt), lte(emailVerifications.expiresAt, now)))
       .returning({ id: emailVerifications.id });
 
+    // Purge promptly (ADR-0024): revoked, idle-dead, or absolute-dead. The
+    // forensic record of any revocation now lives in the audit trail.
     const deadSessions = await this.db
       .delete(sessions)
       .where(
         or(
-          and(isNotNull(sessions.revokedAt), lte(sessions.revokedAt, sessionDeadline)),
-          lte(sessions.absoluteExpiresAt, sessionDeadline),
-          lte(sessions.refreshExpiresAt, sessionDeadline),
+          isNotNull(sessions.revokedAt),
+          lte(sessions.absoluteExpiresAt, now),
+          lte(sessions.refreshExpiresAt, now),
         ),
       )
       .returning({ id: sessions.id });

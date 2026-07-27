@@ -3,6 +3,7 @@ import { createTestDb, type TestDatabase } from '../../../test/db';
 import { UuidV7Generator } from '../../shared/ids/uuid-v7';
 import { SystemClock } from '../../shared/time/system-clock';
 import { WalletResolver } from '../accounts/application/wallet-resolver';
+import { AuditService } from '../audit/application/audit.service';
 import { PostingService } from '../ledger/application/posting.service';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
 import { FundingService, type FundingConfig } from './application/funding.service';
@@ -14,6 +15,7 @@ const { db, close } = createTestDb();
 const ledger = new LedgerStore(db as TestDatabase, ids);
 const posting = new PostingService(db as TestDatabase, ids, clock);
 const wallets = new WalletResolver(db as TestDatabase);
+const audit = new AuditService(db as TestDatabase, ids, clock);
 
 const principal = {
   userId: '00000000-0000-7000-8000-000000000001',
@@ -23,7 +25,7 @@ const principal = {
 };
 
 function fundingService(config: FundingConfig): FundingService {
-  return new FundingService(ledger, posting, wallets, ids, clock, config);
+  return new FundingService(ledger, posting, wallets, ids, clock, config, audit);
 }
 
 function eur(minor: string) {

@@ -5,6 +5,8 @@ import { ENV, type Env } from '../../config/env';
 import { CLOCK, ID_GENERATOR } from '../../shared/tokens';
 import { AccountsModule } from '../accounts/accounts.module';
 import { WalletResolver } from '../accounts/application/wallet-resolver';
+import { AuditModule } from '../audit/audit.module';
+import { AuditService } from '../audit/application/audit.service';
 import { IdentityModule } from '../identity/identity.module';
 import { PostingService } from '../ledger/application/posting.service';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
@@ -24,6 +26,7 @@ import { TransfersController } from './http/transfers.controller';
   imports: [
     LedgerModule,
     AccountsModule,
+    AuditModule,
     IdentityModule,
     ThrottlerModule.forRootAsync({
       inject: [ENV],
@@ -42,8 +45,9 @@ import { TransfersController } from './http/transfers.controller';
         wallets: WalletResolver,
         ids: IdGenerator,
         clock: EventClock,
-      ): TransferService => new TransferService(posting, wallets, ids, clock),
-      inject: [PostingService, WalletResolver, ID_GENERATOR, CLOCK],
+        audit: AuditService,
+      ): TransferService => new TransferService(posting, wallets, ids, clock, audit),
+      inject: [PostingService, WalletResolver, ID_GENERATOR, CLOCK, AuditService],
     },
     {
       provide: FundingService,
@@ -54,12 +58,21 @@ import { TransfersController } from './http/transfers.controller';
         ids: IdGenerator,
         clock: EventClock,
         env: Env,
+        audit: AuditService,
       ): FundingService =>
-        new FundingService(ledger, posting, wallets, ids, clock, {
-          enabled: env.DEV_FUNDING_ENABLED,
-          maxMinor: BigInt(env.DEV_FUNDING_MAX_MINOR),
-        }),
-      inject: [LedgerStore, PostingService, WalletResolver, ID_GENERATOR, CLOCK, ENV],
+        new FundingService(
+          ledger,
+          posting,
+          wallets,
+          ids,
+          clock,
+          {
+            enabled: env.DEV_FUNDING_ENABLED,
+            maxMinor: BigInt(env.DEV_FUNDING_MAX_MINOR),
+          },
+          audit,
+        ),
+      inject: [LedgerStore, PostingService, WalletResolver, ID_GENERATOR, CLOCK, ENV, AuditService],
     },
   ],
 })

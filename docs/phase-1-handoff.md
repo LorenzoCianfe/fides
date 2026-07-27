@@ -4,16 +4,16 @@
 |---|---|
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) |
 | Branch | `phase-1-walking-skeleton` — not yet PR'd (single PR at phase end) |
-| Verified | `apps/api` 115/115 tests green; lint, typecheck, and production build clean |
-| Last updated | 2026-07-12 |
+| Verified | `apps/api` 129/129 tests green; lint, typecheck, and production build clean |
+| Last updated | 2026-07-13 |
 
-> Resume point: **Slice 6 (hash-chained audit trail)**. Slice 5 (SCA-gated P2P transfer + dev funding + wallet transaction history, ADR-0023) is **done**. Read §4 (locked decisions) before writing code — the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) holds for all new surface. Slice 6 wires an append-only, hash-chained audit trail into the sensitive actions now in place (transfer, funding, step-up, session revocation) and lets us revisit the ADR-0021 90-day session-retention grace once audit exists. Auth policy is pinned in ADR-0020/0021; the account model in ADR-0022; the transfer/funding/history decisions in ADR-0023.
+> Resume point: **Slice 7 (Admin RBAC + MFA + four-eyes)**. Slice 6 (append-only, hash-chained audit trail, ADR-0024) is **done**. Read §4 (locked decisions) before writing code — the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) holds for all new surface. Slice 6 added the `audit` module: an immutable, tamper-evident `audit_log` written inside each sensitive action's own transaction (transfer, funding, step-up, session revocation and refresh-reuse, provisioning), one global hash chain verified by `verifyAuditChain`, and — per its revisit of ADR-0021 — prompt dead-session purge. Slice 7 will add the admin RBAC that gates a read/verify surface over the trail. Auth policy is pinned in ADR-0020/0021; the account model in ADR-0022; transfer/funding/history in ADR-0023; the audit trail in ADR-0024.
 
 ---
 
 ## 1. One-paragraph orientation
 
-Phase 1 is built **backend-first** ("API + tests first, clients after"). The double-entry **ledger** (Slices 1–2), the whole of **Slice 3** — identity onboarding (Wave A), WebAuthn relying party + server-side sessions (Wave B, ADR-0020), and the **`/v1/auth` HTTP surface with SCA step-up, throttling, and operational schedulers** (Wave C, ADR-0021) — **Slice 4** (accounts & wallets: event-driven idempotent provisioning off `kyc.approved` + the `/v1/accounts` read surface, ADR-0022), and **Slice 5** (the SCA-gated, idempotent internal P2P transfer, a kill-switched dev funding faucet, and the wallet transaction-history read, ADR-0023) are complete. Everything runs against a real Postgres via Testcontainers, including full HTTP journeys driven through supertest by a software authenticator producing genuine attestations and assertions — the transfer suite runs the real step-up ceremony end to end. `pnpm test` requires a running Docker daemon. Continue at Slice 6; §5 has the concrete next steps.
+Phase 1 is built **backend-first** ("API + tests first, clients after"). The double-entry **ledger** (Slices 1–2), the whole of **Slice 3** — identity onboarding (Wave A), WebAuthn relying party + server-side sessions (Wave B, ADR-0020), and the **`/v1/auth` HTTP surface with SCA step-up, throttling, and operational schedulers** (Wave C, ADR-0021) — **Slice 4** (accounts & wallets: event-driven idempotent provisioning off `kyc.approved` + the `/v1/accounts` read surface, ADR-0022), and **Slice 5** (the SCA-gated, idempotent internal P2P transfer, a kill-switched dev funding faucet, and the wallet transaction-history read, ADR-0023) are complete. **Slice 6** (the append-only, hash-chained audit trail, ADR-0024) is complete. Everything runs against a real Postgres via Testcontainers, including full HTTP journeys driven through supertest by a software authenticator producing genuine attestations and assertions — the transfer suite runs the real step-up ceremony end to end. `pnpm test` requires a running Docker daemon. Continue at Slice 7; §5 has the concrete next steps.
 
 ## 2. Status by slice
 
@@ -23,8 +23,8 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 | 2 | Ledger persistence + async projection | Done | `4872171`, `3a05853` |
 | 3 | Identity, WebAuthn, sessions, HTTP surface + SCA | Done (Waves A `0a274b8`, B `ea42e01`, C `faaf649`) | see git log |
 | 4 | Accounts & wallets | Done | see git log |
-| 5 | P2P transfer + dev funding | **Done** (this session) | see git log |
-| 6 | Audit trail (hash-chained) | Not started | — |
+| 5 | P2P transfer + dev funding | Done | see git log |
+| 6 | Audit trail (hash-chained) | **Done** (this session) | see git log |
 | 7 | Admin RBAC + MFA + four-eyes | Not started | — |
 | 8 | Clients (web + mobile) | Not started | — |
 
@@ -60,6 +60,13 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 - `http/transfers.controller.ts` (`POST /v1/transfers`), `http/dev-funding.controller.ts` (`POST /v1/dev/funding`), `http/idempotency-key.ts` (required-header helper → 400 if missing), `http/dtos.ts`. `payments.module.ts` binds the services by factory with explicit `@Inject` tokens and a module-scoped throttler (same `THROTTLE_ENABLED` kill-switch); registered in `app.module.ts` and `openapi/build-document.ts`.
 - Ledger enabling change: `PostEntryCommand` gained an optional **`onClaimed(tx, now)`** hook that `PostingService.post` runs after a successful idempotency claim and before any ledger write — so the SCA grant is consumed exactly once (replays skip it) and atomically with the post. New `application/transaction-history.reader.ts` (`TransactionHistoryReader`, keyset pagination) backs the wallet history endpoint; both wired in `ledger.module.ts`. No new migration (every table already existed).
 
+**Audit** (`apps/api/src/modules/audit`) — Slice 6, ADR-0024
+- `infra/audit.schema.ts` — `audit_log`: an append-only, hash-chained trail (migration `0008`; the ledger's `fides_forbid_mutation` triggers reject UPDATE/DELETE). Columns: `seq` (gap-free), `actor_type`/`actor_id`, `action`, `resource_type`/`resource_id`, `before`/`after` (jsonb), `correlation_id`, `metadata`, `prev_hash`, `hash`, with unique indexes on `seq`/`prev_hash`/`hash` as anti-fork guards.
+- `application/audit.service.ts` — `AuditService.append(executor, input)` takes the caller's transaction, acquires a transaction-scoped advisory lock, links to the tail (`hash = sha256(prev_hash + stableStringify(core))`, `occurredAt` hashed as epoch ms), and inserts. Pure `verifyAuditChain(rows)` + a `verify()` reader confirm integrity (the reconciliation analogue). `application/audit-actions.ts` centralizes the action/resource constants.
+- `audit.module.ts` — binds `AuditService` by factory (a dependency leaf: db, ids, clock); imported by identity, accounts, and payments (no cycles).
+- Wiring seams: the transfer and funding append via a new symmetric **`onPosted(tx, now, result)`** hook on `PostEntryCommand` (mirror of `onClaimed`, run after all ledger writes, first-execution-only so an idempotent replay adds no record); `WebAuthnService.finishStepUp`, `SessionService.revokeSession` (now wrapped in a transaction) and the `refresh` reuse branch, and `AccountProvisioningService` (a `system` actor, inside the dispatcher tx) append in their existing transactions. Each controller threads the correlation id onto its command.
+- Retention change: `IdentitySweeper` now purges dead sessions promptly (no 90-day grace); the SCA-grant→session FK is `ON DELETE CASCADE` (migration `0009`) so a purged session takes any outstanding grant with it. Records hold internal references only — no raw PII.
+
 **Platform** (`apps/api/src`)
 - `app.setup.ts` `configureApp` — shared by `main.ts` and tests: correlation-id middleware (honor well-formed inbound, else UUID v7; echoed; feeds the error envelope), `/v1` prefix (`/health` excluded), CORS allowlist (`CORS_ORIGINS` ?? `WEBAUTHN_ORIGINS`), global `ZodValidationPipe` + `DomainExceptionFilter` (now maps 429 → `RATE_LIMITED` and unwraps nestjs-zod issues), OpenAPI at `/docs` (`/docs-json`).
 - `database.module.ts` — fail-fast on missing `DATABASE_URL`; pool closed on shutdown (`OnApplicationShutdown`).
@@ -88,16 +95,17 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 | Transaction history | Wallet-scoped `GET /v1/wallets/:walletId/transactions`, ownership-scoped, keyset-paginated; balance stays on the account resource | ADR-0023 (done) |
 | Enumeration posture | Login decoys + uniform email-keyed verify/resend; **registration keeps explicit 409** (throttled) | ADR-0020/0021 |
 | Rate limiting | `@nestjs/throttler` in-memory, module-scoped, `THROTTLE_ENABLED` kill-switch | ADR-0021 (done) |
-| Retention | Dead secrets purged promptly; dead sessions kept 90 days (until Slice 6 audit) | ADR-0021 (done) |
+| Retention | Dead secrets and dead sessions both purged promptly; the forensic record lives in the audit trail | ADR-0021/0024 (done) |
 | Outbox semantics | Dispatcher claims only registered types; `kyc.approved` handler registered and the backlog drains on dispatch | Done (Slice 4) |
 | Account model | Account → wallet → ledger account (1:1 in Phase 1); no stored balance; event-driven idempotent provisioning in the dispatcher tx | ADR-0022 (done) |
 | Balance model | Synchronous in-transaction balance projection, authoritative for funds checks | ADR-0019 (done) |
-| Append-only | DB triggers reject UPDATE/DELETE on ledger tables | Done |
+| Append-only | DB triggers reject UPDATE/DELETE on the ledger tables and the audit trail | Done |
+| Audit | Append-only, hash-chained `audit_log`; append in-transaction via `AuditService`; one global chain; `verifyAuditChain`; internal refs only, no PII | ADR-0024 (done) |
 | Admin | Full RBAC + MFA + four-eyes built in Slice 7 | Slice 7 |
 | Test topology | Everything under `pnpm test` (Testcontainers); HTTP suites boot the real `AppModule` | Done |
 | Clients | API + tests first; clients (Slice 8) last | Sequencing |
 
-Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` balances; explicit currency on monetary rows; Postgres idempotency table; non-negative wallets (system accounts may go negative); `/v1` prefix + correlation ids (done); no passwords; multiple passkeys, recovery deferred; feature branch + conventional commits + one PR at phase end; ADR per new decision; Testcontainers + `fast-check`; hash-chained audit in Slice 6; one Playwright happy-path in Slice 8.
+Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` balances; explicit currency on monetary rows; Postgres idempotency table; non-negative wallets (system accounts may go negative); `/v1` prefix + correlation ids (done); no passwords; multiple passkeys, recovery deferred; feature branch + conventional commits + one PR at phase end; ADR per new decision; Testcontainers + `fast-check`; hash-chained audit done (ADR-0024); one Playwright happy-path in Slice 8.
 
 ## 5. Next steps
 
@@ -105,13 +113,16 @@ Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` 
 - `kyc.approved` handler registered in the `OperationsModule` dispatcher registry; provisions one EUR account + wallet + backing ledger account (`wallet:<walletId>`, liability) via `LedgerStore.createAccount`, atomically in the dispatcher tx and idempotently.
 - `accounts` module: `accounts`/`wallets` schema (migration `0007`), provisioning + read services, `GET /v1/accounts` and `GET /v1/accounts/:accountId` under the Wave C conventions; contracts + paths in `@fides/contracts`; service and HTTP integration tests.
 
-### Slice 5 — P2P transfer + dev funding — DONE (this session, ADR-0023)
+### Slice 5 — P2P transfer + dev funding — DONE (ADR-0023)
 - Idempotent (`Idempotency-Key` → per-actor table), **SCA-gated** transfer (`POST /v1/transfers`): recomputes the action hash from the executed payload via the shared `buildTransferScaAction` and calls `consumeScaGrant(tx, …)` inside the `PostingService.post` transaction through the new `PostEntryCommand.onClaimed(tx, now)` hook (`Dr sender / Cr recipient`, sender guarded). Grant consumed exactly once; idempotent replay skips it. Recipient by email; fingerprint over `{recipient, amount, currency}`.
 - Dev funding faucet (`POST /v1/dev/funding`) from `system:settlement` (asset, unguarded), kill-switched (`DEV_FUNDING_ENABLED`, off by default) + capped, no SCA. Wallet transaction-history read (`GET /v1/wallets/:walletId/transactions`), ownership-scoped + keyset-paginated. Balance stays on the account resource. Service + HTTP integration tests (real step-up ceremony, ledger zero-sum). Proves the Phase 1 exit criteria end to end. No new migration.
 
-### Slices 6–8 (per `roadmap.md`)
-- **6 Audit (NEXT):** append-only, hash-chained audit trail; wire into the sensitive actions now in place (transfer, funding, step-up, session revocation); revisit the ADR-0021 session-retention grace once audit exists.
-- **7 Admin:** RBAC, segregation of duties, four-eyes, admin MFA (TOTP), read-only views.
+### Slice 6 — Audit trail — DONE (this session, ADR-0024)
+- New `audit` module: append-only, hash-chained `audit_log` (migration `0008`, guarded by the ledger's append-only triggers), `AuditService.append` (in-transaction, advisory-lock, one global chain) and a pure `verifyAuditChain`. Wired into the six sensitive actions — transfer and funding (new symmetric `onPosted` hook, first-execution-only), SCA step-up grant, session revocation and refresh-reuse revocation, and account provisioning (`system` actor). Correlation id threaded from each controller; records hold internal references only (no raw PII).
+- Retention revisit (ADR-0021 → ADR-0024): dead sessions purged promptly; SCA-grant→session FK is `ON DELETE CASCADE` (migration `0009`). No read/verify HTTP surface yet — it lands with admin RBAC (Slice 7). 129 tests.
+
+### Slices 7–8 (per `roadmap.md`)
+- **7 Admin (NEXT):** RBAC, segregation of duties, four-eyes, admin MFA (TOTP), read-only views — including the first read/verify surface over the audit trail.
 - **8 Clients:** web + mobile with full passkeys; add the httpOnly-cookie transport mode for web (ADR-0021) plus security headers (helmet/HSTS); Playwright happy-path; i18n scaffolding.
 
 ## 6. Environment & workflow notes
@@ -122,7 +133,7 @@ Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` 
 - **DI/validation convention (important):** the vitest esbuild transform emits no `design:paramtypes`, so type-only injection silently yields `undefined` in tests. Every Nest-instantiated class (controllers, guards, schedulers) uses **explicit `@Inject(Token)`** constructor parameters, and every `@Body`/`@Param` carries an **explicit `new ZodValidationPipe(Dto)`** (the global pipe stays as a production safety net; the contracts' transforms are idempotent). Follow this for all new HTTP surface.
 - **Contracts build:** `apps/api` consumes `@fides/contracts` from its built `dist` — after editing contracts run `corepack pnpm --filter @fides/contracts build` before typechecking the API.
 - **Git pre-commit hook** runs `pnpm exec lint-staged`; prefix commits with the Corepack shim: `PATH="$HOME/.corepack-shims:$PATH" git commit ...`.
-- **Migrations** are generated offline: `corepack pnpm --filter @fides/api exec drizzle-kit generate --name <name>` (latest: `0007_accounts_wallets`). New env vars are documented in `.env.example` (WebAuthn, session TTLs, CORS, throttle/scheduler switches and intervals). Slice 4 added no env vars.
+- **Migrations** are generated offline: `corepack pnpm --filter @fides/api exec drizzle-kit generate --name <name>` (latest: `0009_sca_grants_session_cascade`). Slice 6 added `0008_audit_log` (with hand-appended append-only triggers — drizzle-kit does not emit them, same as `0002`) and `0009` (the SCA-grant→session FK cascade); no new env vars. New env vars are documented in `.env.example` (WebAuthn, session TTLs, CORS, throttle/scheduler switches and intervals).
 - **Repo is PUBLIC** (`LorenzoCianfe/fides`); Dependabot tuned on `main`; framework majors deferred to Phase 7.
 - **Commit cadence:** per-slice conventional commits on `phase-1-walking-skeleton`; one PR at Phase 1 completion.
 
@@ -152,3 +163,4 @@ Manual smoke: `pnpm stack:up`, set `.env`, run `corepack pnpm --filter @fides/ap
 - WebAuthn **server-issued options schemas** in contracts are documentation-shaped (responses are not runtime-validated); client-submitted payloads are validated with `.passthrough()`.
 - **Account provisioning is asynchronous:** a just-approved user has no account until the outbox dispatcher runs (`GET /v1/accounts` returns an empty list until then, never an error). With `SCHEDULERS_ENABLED=false` (the HTTP test topology), drive it explicitly via `app.get(OutboxDispatcher).dispatchPending()`.
 - The `GET /v1/accounts/:accountId` route returns **403** (not 404) for an account owned by another user — a deliberate, minor existence oracle kept for consistency with `assertResourceOwnership`; account ids are non-enumerable UUID v7 (ADR-0022).
+- **Audit trail (ADR-0024):** the chain detects any modification or removal of a non-tail record, but not deletion of the **tail** (truncation) — that needs an external high-water anchor, deferred beyond Phase 1. Denied/failed sensitive attempts are not recorded (a denial rolls its transaction back; a tamper-evident denial log is a separate out-of-band concern). There is **no read/verify HTTP surface** yet — auditing is a service method + tests only, exposed to admins under RBAC in Slice 7. The system, outbox-driven provisioning record carries a null correlation id (the dispatcher passes only the payload), traced instead by `userId` + KYC reference.

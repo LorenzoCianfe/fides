@@ -2,6 +2,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Inject,
@@ -25,10 +26,14 @@ export class SessionsController {
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async logout(@CurrentPrincipal() principal: Principal): Promise<void> {
+  async logout(
+    @CurrentPrincipal() principal: Principal,
+    @Headers('x-correlation-id') correlationId: string | undefined,
+  ): Promise<void> {
     await this.sessions.revokeSession(principal.sessionId, {
       userId: principal.userId,
       reason: 'logout',
+      correlationId,
     });
   }
 
@@ -50,11 +55,13 @@ export class SessionsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async revoke(
     @CurrentPrincipal() principal: Principal,
+    @Headers('x-correlation-id') correlationId: string | undefined,
     @Param(new ZodValidationPipe(SessionIdParamsDto)) params: SessionIdParamsDto,
   ): Promise<void> {
     await this.sessions.revokeSession(params.sessionId, {
       userId: principal.userId,
       reason: 'user_revoked',
+      correlationId,
     });
   }
 }

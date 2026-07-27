@@ -11,6 +11,9 @@ import { configureApp } from '../../app.setup';
 import { loadEnv } from '../../config/env';
 import { OutboxDispatcher } from '../../shared/outbox/outbox.dispatcher';
 import { NOTIFICATIONS } from '../../shared/tokens';
+import { AuditAction } from '../audit/application/audit-actions';
+import { AuditService } from '../audit/application/audit.service';
+import { auditLog } from '../audit/infra/audit.schema';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
 
 const ORIGIN = 'http://localhost:3001';
@@ -338,6 +341,33 @@ describe('payments HTTP surface (integration)', () => {
       .get('/v1/wallets/not-a-uuid/transactions')
       .set('Authorization', `Bearer ${bob.accessToken}`)
       .expect(400);
+  });
+
+  it('records the transfer on the tamper-evident audit trail with its correlation id', async () => {
+    const { alice, bob } = await setupFundedPair('10000');
+
+    const correlationId = 'audit-corr-0000000001';
+    const grant = await stepUpGrant(alice, transferAction(bob.email, '2500'));
+    const posted = await request(server)
+      .post('/v1/transfers')
+      .set('Authorization', `Bearer ${alice.accessToken}`)
+      .set('Idempotency-Key', 'audit-tx')
+      .set('X-Correlation-Id', correlationId)
+      .send({ recipient: bob.email, amount: { amount: '2500', currency: EUR }, grant })
+      .expect(201);
+
+    const rows = await db.select().from(auditLog);
+    const record = rows.find((row) => row.action === AuditAction.TransferExecuted);
+    expect(record).toBeDefined();
+    expect(record!.actorType).toBe('user');
+    expect(record!.actorId).toBe(alice.userId);
+    expect(record!.resourceId).toBe(posted.body.transferId as string);
+    expect(record!.correlationId).toBe(correlationId);
+    expect((record!.metadata as { amountMinor: string }).amountMinor).toBe('2500');
+
+    // The whole journey — provisioning, funding, step-up, transfer — is one intact
+    // chain (a step-up grant and the transfer are the two step-up/transfer records).
+    expect(await app.get(AuditService).verify()).toMatchObject({ ok: true });
   });
 
   it('publishes the payments surface in the OpenAPI document', async () => {

@@ -1,4 +1,13 @@
-import { Body, Controller, HttpCode, HttpStatus, Inject, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { ScaGrantResponseDto, WebAuthnRequestOptionsDto } from '@fides/contracts';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
@@ -32,6 +41,7 @@ export class ScaController {
   @Post('verify')
   async finish(
     @CurrentPrincipal() principal: Principal,
+    @Headers('x-correlation-id') correlationId: string | undefined,
     @Body(new ZodValidationPipe(FinishScaDto)) body: FinishScaDto,
   ): Promise<ScaGrantResponseDto> {
     const grant = await this.webauthn.finishStepUp({
@@ -39,6 +49,7 @@ export class ScaController {
       sessionId: principal.sessionId,
       action: body.action,
       response: body.response as AuthenticationResponseJSON,
+      correlationId,
     });
     return {
       grant: grant.grant,

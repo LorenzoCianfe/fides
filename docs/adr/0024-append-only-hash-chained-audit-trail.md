@@ -1,0 +1,56 @@
+# ADR-0024: Append-only, hash-chained audit trail
+
+- Status: Accepted
+- Date: 2026-07-13
+- Deciders: Solo maintainer
+- Refines: [ADR-0005](0005-postgres-double-entry-ledger.md), [ADR-0019](0019-synchronous-balance-projection.md), [ADR-0021](0021-http-auth-surface-policy.md)
+
+## Context
+
+`security.md` §8 requires an immutable, append-only, tamper-evident audit trail — separate from mutable application state — capturing actor, action, target, before/after where applicable, timestamp, and correlation id for every sensitive customer action. The Phase 1 exit criteria (`roadmap.md`) demand that a transfer "appears in the audit trail". Slice 5 put the sensitive actions in place (SCA-gated P2P transfer, dev funding, step-up, session revocation) on top of the accounts provisioned in Slice 4, so the trail now has real actions to record.
+
+What was open: whether the audit record is written **inside the audited action's transaction** or derived **asynchronously from the outbox**; whether the tamper-evidence chain is **global or per-actor**, and its exact hash construction; the **record shape** (and what before/after means for a money move versus a session revocation); **which actions** to wire; whether the ADR-0021 90-day dead-session retention grace can be **shortened** now that a forensic record exists; and what **verification** surface Slice 6 exposes.
+
+## Decision
+
+**The audit record is appended inside the same transaction as the audited action.** This is the ADR-0019 principle applied to audit: the security property "no sensitive action without its audit, no audit without its action" is only *guaranteed* by atomicity — the record and the action commit or roll back together. The transactional outbox is rejected as the audit's source of truth for three reasons: it has **coverage gaps** (there is no outbox event for step-up, session revocation, or refresh-reuse revocation — auditing them via the outbox would mean adding emission to each *and* still lagging); it has a **loss window** (a row parked `failed` after `maxAttempts` would be permanently unaudited); and it would **invert the model** — the outbox is mutable operational state that is status-updated and swept, but §8 requires the trail to be separate from mutable state. The framing: **the balance projection and the audit trail are the two projections maintained inline because a correctness/security property depends on them; the transaction-history projection is the one that may lag because it is a pure read model.**
+
+**A single global hash chain, appended under a transaction-scoped advisory lock acquired last.** Each record carries the previous record's hash; a break anywhere is detectable by recomputation. A single chain necessarily serializes appends at its tail (two appends reading the same tail would fork it), and because the append lives inside the action's transaction the chain lock is held until that transaction commits. The lever that keeps this cheap is to **acquire the lock as late as possible**: the money-path append runs at the *end* of the posting transaction, so the global lock is held only for the final insert, not across the balance-row locks and the outbox write. This ordering is also **deadlock-free** — every action takes its balance locks first (in account-id order) and the audit lock last, one consistent global order with no cycle. At single-instance Phase 1 volumes, where the audited actions are low-frequency human actions, global-chain contention is immaterial; **per-actor/per-aggregate chains are the documented escape hatch** if throughput ever demands it (at the cost of N verification walks and a chain assignment for system/multi-actor events).
+
+**Hash construction.** The genesis predecessor is 64 zero hex characters; the first row has `seq = 0`. Under the advisory lock the appender reads the current tail, sets `seq = tail.seq + 1` (gap-free — it is derived under the lock and rolls back with the transaction), and computes `hash = sha256Hex(prev_hash + stableStringify(record))`, reusing the canonicalization built for SCA dynamic linking (ADR-0021). `prev_hash` is fixed-width hex, so the concatenation is unambiguous. `UNIQUE(seq)`, `UNIQUE(prev_hash)`, and `UNIQUE(hash)` are structural anti-fork guards: even if the locking were bypassed, two rows could not share a predecessor.
+
+**The record holds internal references only.** Because the trail is immutable and un-erasable, it stores user ids, wallet/ledger-account ids, journal-entry ids, amounts, and action hashes — never raw PII such as recipient email or names (GDPR data minimization; the trail is a lawful-retention exception, but minimizing what lands in it is prudent). `before`/`after` apply only to mutations of **mutable** state — a session revocation records `{revoked:false}` → `{revoked:true, reason}` — whereas a money move references the **already-immutable** journal entry as its target and needs no before/after. `actor_type` is `user` or `system` (room for `admin` in Slice 7). The correlation id is threaded from the correlation-id middleware into each command; system, outbox-driven events (provisioning) carry a null correlation id and are traced by their `userId` and KYC reference instead.
+
+**A single `AuditService.append(executor, input)` seam.** It takes the caller's transaction handle, so it enlists in whatever transaction already exists. The money path supplies it through a new **symmetric `onPosted(tx, now, result)` hook** on `PostEntryCommand` — the mirror of the Slice 5 `onClaimed` hook — which `PostingService` runs at the end of the posting transaction, on the first (claiming) execution only, so an idempotent replay neither re-runs it nor writes a duplicate audit record. The identity actions append inside their existing transactions (`finishStepUp`, `refresh`), `revokeSession` gains a transaction wrapper, and provisioning appends inside the dispatcher transaction. The `audit` module depends only on the database, id generator, and clock, so it is a dependency leaf — no module cycles.
+
+**Six actions are wired, all successful executions:** `p2p_transfer.executed`, `dev_funding.executed`, `sca.step_up.granted`, `session.revoked`, `session.refresh_reuse_revoked`, and `account.provisioned`. None move off the outbox — each is appended in the transaction that already exists (the posting transaction, an identity transaction, or the dispatcher transaction). Denied attempts (a failed SCA consumption, an overdraft rejection) are deliberately **not** recorded this slice: a denial rolls its transaction back, so it cannot be captured atomically, and a tamper-evident denial log needs a separate out-of-band path that is out of scope here.
+
+**Dead sessions are now purged promptly.** ADR-0021 kept revoked, idle-dead, and absolute-dead sessions for a 90-day forensic grace "until the Slice 6 audit trail exists". It exists: `session.revoked` and `session.refresh_reuse_revoked` records carry the session id, device id, reason, and timestamps, so the forensic value has moved to the trail and the dead rows can join the "dead secrets purged promptly" class. The audit table itself is **exempt from the sweeper** and protected by the same `fides_forbid_mutation` triggers as the ledger (UPDATE/DELETE rejected at the database), so its retention is long and lawful-retention-bound.
+
+**Verification is a service method plus tests; no HTTP surface.** `verifyAuditChain(rows)` is a pure function that walks the rows in `seq` order, checks each `prev_hash` links to the prior `hash`, recomputes each `hash`, and confirms the sequence is gap-free — the analogue of the ledger's `reconcileAccount`/`sumSignedByCurrency` invariants. A thin `verify()` reader loads the rows and delegates to it. Reading and verifying the trail is inherently an administrative capability, and admin RBAC (with the read-only auditor role, `security.md` §3.2) is Slice 7, so no read/verify endpoint is exposed now.
+
+## Consequences
+
+Positive:
+
+- Every sensitive action carries its audit atomically: the record cannot exist without the action, nor the action without the record, and any in-transaction failure rolls both back together.
+- Tamper-evidence against an actor who bypasses the application and the append-only triggers (e.g. a privileged direct-SQL edit or delete): any rewrite or removal of history breaks the chain and is caught by a single, cheap verification walk.
+- The `onPosted` hook is the minimal mirror of `onClaimed`: `PostingService` stays the sole owner of the money transaction, and any future guarded posting (card authorization, reversal) can record its audit the same way.
+- Data minimization improves twice over: no raw PII in the immutable trail, and dead sessions are no longer retained for 90 days once their revocation is recorded.
+
+Trade-offs / negative:
+
+- A single global chain serializes all sensitive appends at its tail; immaterial at Phase 1 volume and mitigated by acquiring the lock last, but it is a real serialization point that per-actor chains would remove.
+- `PostEntryCommand` now carries a second optional behavioural hook (`onPosted`); a small further increase in the posting contract's surface, justified exactly as `onClaimed` was.
+- The system, outbox-driven provisioning audit has no correlation id (the dispatcher passes only the payload to handlers); it is traceable by `userId` and KYC reference instead.
+- Denied sensitive attempts are not audited this slice; capturing them tamper-evidently is deferred to a later out-of-band path.
+- The chain detects any modification or removal of a **non-tail** record, but not deletion of the **tail** (truncation): dropping the most recent rows leaves a shorter-but-valid chain. Detecting truncation needs an external high-water anchor (a notarized latest `seq`/`hash`), deferred beyond Phase 1.
+
+## Alternatives considered
+
+- **Derive the audit asynchronously from the outbox** — rejected: coverage gaps (no events for step-up or session revocation), a loss window for parked rows, and it would make the mutable, swept outbox the source of truth for a record that must be separate from mutable state.
+- **Per-actor / per-aggregate chains now** — rejected for Phase 1: they remove cross-actor contention but multiply verification into N walks and need a chain assignment for system and (later) admin actions; recorded as the scale path if throughput demands it.
+- **Store human-readable identifiers (recipient email) for standalone readability** — rejected: raw PII in an un-erasable store is a GDPR liability; internal ids plus amounts are sufficient forensically and resolve to people through the mutable tables under lawful process.
+- **Stored before/after for money moves** — rejected as redundant: the journal entry the record targets is already immutable and is the authoritative before/after; before/after is reserved for mutations of mutable rows (sessions).
+- **Audit denied attempts in the same slice** — rejected: a denial rolls its transaction back, so it cannot be recorded atomically; a tamper-evident denial log is a separate out-of-band concern.
+- **Consume the chain lock at the start of the transaction (reuse `onClaimed`)** — rejected: it would hold the global lock across the entire posting transaction; appending last via `onPosted` minimizes the hold and keeps the lock ordering deadlock-free.

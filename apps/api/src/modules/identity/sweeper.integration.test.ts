@@ -4,6 +4,7 @@ import { createTestDb, resetDb, type TestDatabase } from '../../../test/db';
 import { CapturingNotifications } from '../../../test/notifications';
 import { SoftwareAuthenticator } from '../../../test/webauthn';
 import { UuidV7Generator } from '../../shared/ids/uuid-v7';
+import { AuditService } from '../audit/application/audit.service';
 import { MockKycAdapter } from '../kyc/infra/mock-kyc.adapter';
 import { EmailVerificationService } from './application/email-verification.service';
 import { IdentitySweeper } from './application/identity-sweeper';
@@ -39,8 +40,9 @@ const emailVerification = new EmailVerificationService(
   clock,
   notifications,
 );
-const sessions = new SessionService(db as TestDatabase, ids, clock);
-const webauthn = new WebAuthnService(db as TestDatabase, ids, clock, sessions, RP);
+const audit = new AuditService(db as TestDatabase, ids, clock);
+const sessions = new SessionService(db as TestDatabase, ids, clock, audit);
+const webauthn = new WebAuthnService(db as TestDatabase, ids, clock, sessions, RP, audit);
 const sweeper = new IdentitySweeper(db as TestDatabase, clock);
 
 const baseInput: Omit<RegisterInput, 'email'> = {
@@ -119,43 +121,41 @@ describe('identity sweeper (integration)', () => {
     expect(await db.select().from(webauthnChallenges)).toHaveLength(0);
   });
 
-  it('retains dead sessions for the 90-day forensic grace, then purges them', async () => {
+  it('purges a revoked session promptly, cascading its SCA grant (ADR-0024)', async () => {
     const alice = await onboardWithPasskey('alice@example.com');
     await issueScaGrant(db as TestDatabase, ids, clock, {
       userId: alice.userId,
       sessionId: alice.session.sessionId,
       actionHash: computeActionHash({ type: 'p2p_transfer', payload: { amountMinor: '1' } }),
     });
-    await sessions.revokeSession(alice.session.sessionId, { userId: alice.userId });
 
-    // Freshly revoked: inside the grace window, the session (and its still
-    // unexpired grant) survive the sweep.
-    const immediate = await sweeper.sweep();
-    expect(immediate.sessions).toBe(0);
-    expect(immediate.scaGrants).toBe(0);
+    // A live session and its unexpired grant survive the sweep.
+    const live = await sweeper.sweep();
+    expect(live.sessions).toBe(0);
+    expect(await db.select().from(sessionRows)).toHaveLength(1);
+    expect(await db.select().from(scaGrants)).toHaveLength(1);
+
+    // Once revoked it is dead and swept promptly — no 90-day grace, because the
+    // revocation now lives in the audit trail. The still-unexpired grant is not
+    // consumed/expired, so it is not swept explicitly; deleting the session
+    // cascades it away (FK ON DELETE CASCADE).
+    await sessions.revokeSession(alice.session.sessionId, { userId: alice.userId });
+    const swept = await sweeper.sweep();
+    expect(swept.sessions).toBe(1);
+    expect(await db.select().from(sessionRows)).toHaveLength(0);
+    expect(await db.select().from(scaGrants)).toHaveLength(0);
+  });
+
+  it('purges an idle-dead session once its refresh deadline passes', async () => {
+    await onboardWithPasskey('alice@example.com');
+
+    // Freshly issued: alive, so retained.
+    expect((await sweeper.sweep()).sessions).toBe(0);
     expect(await db.select().from(sessionRows)).toHaveLength(1);
 
-    // 91 days on: the expired grant goes first (it references the session),
-    // then the session itself. A never-refreshed second session would already
-    // be idle-dead at day 30, so it is created now to prove retention counts
-    // from death, not creation.
-    clock.advance(91 * DAY_MS);
-    const survivor = await sessions.issueSession(db as TestDatabase, alice.userId, {
-      name: 'Fides for iOS',
-      platform: 'ios',
-    });
-    const late = await sweeper.sweep();
-    expect(late.scaGrants).toBe(1);
-    expect(late.sessions).toBe(1);
-
-    const remaining = await db.select().from(sessionRows);
-    expect(remaining.map((row) => row.id)).toEqual([survivor.sessionId]);
-    expect(await db.select().from(scaGrants)).toHaveLength(0);
-
-    // The survivor dies idle at +30 d and is purged 90 days after that.
-    clock.advance(121 * DAY_MS);
-    const final = await sweeper.sweep();
-    expect(final.sessions).toBe(1);
+    // Past the 30-day idle window with no refresh: idle-dead, swept promptly.
+    clock.advance(31 * DAY_MS);
+    expect((await sweeper.sweep()).sessions).toBe(1);
     expect(await db.select().from(sessionRows)).toHaveLength(0);
   });
 });

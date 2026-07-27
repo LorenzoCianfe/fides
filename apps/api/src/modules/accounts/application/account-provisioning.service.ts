@@ -1,5 +1,7 @@
 import { BASE_CURRENCY, type IdGenerator } from '@fides/domain';
 import type { DatabaseTx } from '../../../database/db.types';
+import { AuditAction, AuditResource } from '../../audit/application/audit-actions';
+import { AuditService } from '../../audit/application/audit.service';
 import type { KycApprovedPayload } from '../../kyc/application/kyc-events';
 import { LedgerStore } from '../../ledger/infra/ledger.repository';
 import { accounts, wallets } from '../infra/accounts.schema';
@@ -20,6 +22,7 @@ export class AccountProvisioningService {
   constructor(
     private readonly ledger: LedgerStore,
     private readonly ids: IdGenerator,
+    private readonly audit: AuditService,
   ) {}
 
   async provisionForApprovedKyc(tx: DatabaseTx, payload: KycApprovedPayload): Promise<void> {
@@ -51,6 +54,19 @@ export class AccountProvisioningService {
       accountId,
       currency: BASE_CURRENCY,
       ledgerAccountId: ledgerAccount.id,
+    });
+
+    // Record provisioning atomically in the dispatcher transaction (ADR-0024). A
+    // system action off the outbox: no request correlation id, traced instead by
+    // the user id and KYC reference in metadata.
+    await this.audit.append(tx, {
+      actorType: 'system',
+      actorId: null,
+      action: AuditAction.AccountProvisioned,
+      resourceType: AuditResource.Account,
+      resourceId: accountId,
+      after: { walletId, ledgerAccountId: ledgerAccount.id, currency: BASE_CURRENCY },
+      metadata: { userId: payload.userId, kycReference: payload.reference },
     });
   }
 }

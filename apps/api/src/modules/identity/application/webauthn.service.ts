@@ -31,6 +31,8 @@ import {
   type WebauthnChallengeRow,
 } from '../infra/auth.schema';
 import { users, type UserRow } from '../infra/identity.schema';
+import { AuditAction, AuditResource } from '../../audit/application/audit-actions';
+import { AuditService } from '../../audit/application/audit.service';
 import { assertEnrolmentTokenValid, consumeEnrolmentToken } from './enrolment-token';
 import { computeActionHash, issueScaGrant, type IssuedScaGrant, type ScaAction } from './sca-grant';
 import type { DeviceDescriptor, IssuedSession, SessionService } from './session.service';
@@ -82,6 +84,8 @@ export interface FinishStepUpParams extends StartStepUpParams {
   /** The guard-validated principal's sessionId; the grant is bound to it. */
   readonly sessionId: string;
   readonly response: AuthenticationResponseJSON;
+  /** Correlation id from the request, recorded on the audit trail (ADR-0024). */
+  readonly correlationId?: string;
 }
 
 /**
@@ -99,6 +103,7 @@ export class WebAuthnService {
     private readonly clock: EventClock,
     private readonly sessions: SessionService,
     private readonly config: WebAuthnConfig,
+    private readonly audit: AuditService,
   ) {}
 
   /** Issue creation options. First passkey: enrolment-token gated; later ones: session gated. */
@@ -346,11 +351,23 @@ export class WebAuthnService {
         .update(credentials)
         .set({ counter: newCounter, lastUsedAt: now })
         .where(eq(credentials.id, credential.id));
-      return issueScaGrant(tx, this.ids, this.clock, {
+      const issued = await issueScaGrant(tx, this.ids, this.clock, {
         userId: params.userId,
         sessionId: params.sessionId,
         actionHash,
       });
+      // Record that SCA step-up succeeded, atomically with issuance (ADR-0024).
+      // The grant token is never stored — only the action binding it authorizes.
+      await this.audit.append(tx, {
+        actorType: 'user',
+        actorId: params.userId,
+        action: AuditAction.ScaStepUpGranted,
+        resourceType: AuditResource.ScaGrant,
+        resourceId: actionHash,
+        correlationId: params.correlationId ?? null,
+        metadata: { actionType: params.action.type, sessionId: params.sessionId },
+      });
+      return issued;
     });
   }
 

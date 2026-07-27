@@ -6,6 +6,8 @@ import { DRIZZLE } from '../../database/database.module';
 import type { Database } from '../../database/db.types';
 import type { NotificationPort } from '../../shared/notifications/notification.port';
 import { CLOCK, ID_GENERATOR, NOTIFICATIONS } from '../../shared/tokens';
+import { AuditModule } from '../audit/audit.module';
+import { AuditService } from '../audit/application/audit.service';
 import { KYC_PORT, type KycPort } from '../kyc/application/kyc.port';
 import { KycModule } from '../kyc/kyc.module';
 import { SessionAuthGuard } from './application/auth.guard';
@@ -42,6 +44,7 @@ function webauthnConfigFromEnv(env: Env): WebAuthnConfig {
 @Module({
   imports: [
     KycModule,
+    AuditModule,
     ThrottlerModule.forRootAsync({
       inject: [ENV],
       useFactory: (env: Env) => ({
@@ -54,9 +57,14 @@ function webauthnConfigFromEnv(env: Env): WebAuthnConfig {
   providers: [
     {
       provide: SessionService,
-      useFactory: (db: Database, ids: IdGenerator, clock: EventClock, env: Env): SessionService =>
-        new SessionService(db, ids, clock, sessionConfigFromEnv(env)),
-      inject: [DRIZZLE, ID_GENERATOR, CLOCK, ENV],
+      useFactory: (
+        db: Database,
+        ids: IdGenerator,
+        clock: EventClock,
+        audit: AuditService,
+        env: Env,
+      ): SessionService => new SessionService(db, ids, clock, audit, sessionConfigFromEnv(env)),
+      inject: [DRIZZLE, ID_GENERATOR, CLOCK, AuditService, ENV],
     },
     {
       provide: WebAuthnService,
@@ -66,9 +74,10 @@ function webauthnConfigFromEnv(env: Env): WebAuthnConfig {
         clock: EventClock,
         sessions: SessionService,
         env: Env,
+        audit: AuditService,
       ): WebAuthnService =>
-        new WebAuthnService(db, ids, clock, sessions, webauthnConfigFromEnv(env)),
-      inject: [DRIZZLE, ID_GENERATOR, CLOCK, SessionService, ENV],
+        new WebAuthnService(db, ids, clock, sessions, webauthnConfigFromEnv(env), audit),
+      inject: [DRIZZLE, ID_GENERATOR, CLOCK, SessionService, ENV, AuditService],
     },
     {
       provide: RegistrationService,

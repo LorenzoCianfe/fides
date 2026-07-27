@@ -5,10 +5,10 @@
 | Field | Value |
 |---|---|
 | Document | Master platform documentation |
-| Version | 0.8.0 |
+| Version | 0.9.0 |
 | Status | Phase 1 (Walking skeleton) — in progress |
 | Scope | Simulated-core EU neobank (iOS, Android, web) + admin back office |
-| Last updated | 2026-07-12 |
+| Last updated | 2026-07-13 |
 
 ---
 
@@ -207,6 +207,7 @@ ADRs are maintained under `docs/adr/` (see the [index](docs/adr/README.md)). The
 | 0021 | HTTP auth surface: token transport, SCA dynamic linking, throttling, retention (refines 0007, 0020) | Accepted |
 | 0022 | Account provisioning and the account/wallet/ledger-account model (refines 0005, 0019) | Accepted |
 | 0023 | Internal P2P transfer: SCA enforcement, dev funding, and the transaction-history read (refines 0019, 0021, 0022) | Accepted |
+| 0024 | Append-only, hash-chained audit trail (refines 0005, 0019, 0021) | Accepted |
 
 ## 9. Versioning and change log
 
@@ -222,6 +223,7 @@ The platform follows semantic versioning. This document's version tracks documen
 | 0.6.0 | 2026-07-06 | Phase 1 Slice 3 Wave C: the `/v1/auth` HTTP surface (registration, email-keyed verification and resend, WebAuthn ceremonies, session refresh/logout/list/revoke) with Zod contracts and generated OpenAPI; SCA step-up seam with PSD2 dynamic linking (action-hashed challenges, single-use grants); auth rate limiting; correlation-id middleware, CORS, and `/v1` versioning; scheduled outbox dispatch and retention sweeper. ADR-0021 added. Slice 3 complete. |
 | 0.7.0 | 2026-07-12 | Phase 1 Slice 4: accounts & wallets. Event-driven, idempotent account provisioning consumes `kyc.approved` inside the outbox dispatcher's transaction, creating one EUR account + a single wallet + a backing ledger account (`wallet:<walletId>`, liability). Account read surface (`GET /v1/accounts`, `GET /v1/accounts/{accountId}`) with live balances read from the authoritative ledger projection (ADR-0019), session-guarded and ownership-scoped. ADR-0022 added. |
 | 0.8.0 | 2026-07-12 | Phase 1 Slice 5: internal instant P2P transfer + dev funding. `POST /v1/transfers` — idempotent, SCA-gated transfer with PSD2 dynamic linking enforced inside the posting transaction (action hash recomputed from the executed amount/payee; single-use grant consumed via a new `onClaimed` hook so it fires exactly once and replays skip it). Kill-switched dev funding faucet (`POST /v1/dev/funding`) and a keyset-paginated, ownership-scoped wallet transaction history (`GET /v1/wallets/{walletId}/transactions`). Proves the Phase 1 exit criteria end to end (115 tests). ADR-0023 added. |
+| 0.9.0 | 2026-07-13 | Phase 1 Slice 6: append-only, hash-chained audit trail. A new `audit` module records sensitive actions (P2P transfer, dev funding, SCA step-up, session revocation and refresh-reuse revocation, account provisioning) to an immutable `audit_log` (migration `0008`) inside each action's own transaction — a money move via a new symmetric `onPosted` hook on the posting path. One global hash chain (`sha256(prev_hash + canonical(record))`, gap-free `seq`, advisory-lock append) whose integrity a pure `verifyAuditChain` confirms; the ledger's append-only triggers reject UPDATE/DELETE, so tampering breaks the chain. Records hold internal references only (no raw PII). Dead-session retention tightened to prompt purge now that the forensic record lives in the trail; the SCA-grant→session FK became `ON DELETE CASCADE` (migration `0009`). ADR-0024 added. 129 tests. |
 
 ## 10. Glossary
 

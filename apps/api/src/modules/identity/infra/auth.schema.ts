@@ -164,7 +164,9 @@ export const enrolmentTokens = pgTable(
  * Single-use SCA grants (ADR-0021): a verified step-up assertion mints one,
  * bound to the user, the session, and the canonical hash of the action it
  * authorizes (dynamic linking). The money path consumes it atomically. Stored
- * hashed, like every other bearer secret.
+ * hashed, like every other bearer secret. The session FK cascades on delete: a
+ * grant is meaningless without its session, so when the sweeper purges a dead
+ * session (promptly now, ADR-0024) any outstanding grant goes with it.
  */
 export const scaGrants = pgTable(
   'sca_grants',
@@ -175,7 +177,7 @@ export const scaGrants = pgTable(
       .references(() => users.id),
     sessionId: uuid('session_id')
       .notNull()
-      .references(() => sessions.id),
+      .references(() => sessions.id, { onDelete: 'cascade' }),
     /** Canonical SHA-256 of the action this grant authorizes. */
     actionHash: text('action_hash').notNull(),
     tokenHash: text('token_hash').notNull(),

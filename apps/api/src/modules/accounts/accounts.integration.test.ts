@@ -9,6 +9,9 @@ import { SystemClock } from '../../shared/time/system-clock';
 import { RegistrationService } from '../identity/application/registration.service';
 import { KYC_APPROVED_EVENT, type KycApprovedPayload } from '../kyc/application/kyc-events';
 import { MockKycAdapter } from '../kyc/infra/mock-kyc.adapter';
+import { AuditAction } from '../audit/application/audit-actions';
+import { AuditService } from '../audit/application/audit.service';
+import { auditLog } from '../audit/infra/audit.schema';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
 import { AccountProvisioningService } from './application/account-provisioning.service';
 import { accounts, wallets } from './infra/accounts.schema';
@@ -18,7 +21,8 @@ const clock = new SystemClock();
 
 const { db, close } = createTestDb();
 const store = new LedgerStore(db as TestDatabase, ids);
-const provisioning = new AccountProvisioningService(store, ids);
+const audit = new AuditService(db as TestDatabase, ids, clock);
+const provisioning = new AccountProvisioningService(store, ids, audit);
 const notifications = new CapturingNotifications();
 const registration = new RegistrationService(
   db as TestDatabase,
@@ -99,6 +103,17 @@ describe('account provisioning (integration)', () => {
     const balance = await store.getBalance(wallet.ledgerAccountId);
     expect(balance.amount).toBe(0n);
     expect(balance.currency).toBe('EUR');
+
+    // Provisioning is recorded on the tamper-evident audit trail as a system
+    // action, atomically within the dispatcher transaction (ADR-0024).
+    const auditRows = await db.select().from(auditLog);
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]!.action).toBe(AuditAction.AccountProvisioned);
+    expect(auditRows[0]!.actorType).toBe('system');
+    expect(auditRows[0]!.actorId).toBeNull();
+    expect(auditRows[0]!.resourceId).toBe(account!.id);
+    expect((auditRows[0]!.metadata as { userId: string }).userId).toBe(userId);
+    expect(await audit.verify()).toEqual({ ok: true, count: 1, brokenAtSeq: null });
   });
 
   it('is idempotent when the approval event is re-delivered', async () => {

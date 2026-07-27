@@ -34,6 +34,16 @@ export interface PostEntryCommand {
    * before any ledger write.
    */
   readonly onClaimed?: (tx: DatabaseTx, now: Date) => Promise<void>;
+  /**
+   * Optional step run inside the posting transaction after every ledger write
+   * (balances, postings, outbox, idempotency completion) on the first (claiming)
+   * execution only — never on an idempotent replay. The mirror of `onClaimed`:
+   * Slice 6 uses it to append the audit record atomically with the money move
+   * (ADR-0024), late in the transaction so the audit-chain advisory lock is held
+   * for the shortest possible tail. Receives the posted result, so it can record
+   * the resulting balances; throwing here rolls the whole transaction back.
+   */
+  readonly onPosted?: (tx: DatabaseTx, now: Date, result: PostEntryResult) => Promise<void>;
 }
 
 export interface AccountBalanceResult {
@@ -73,7 +83,7 @@ export class PostingService {
   ) {}
 
   async post(command: PostEntryCommand): Promise<PostEntryResult> {
-    const { entry, guardAccountIds, idempotency, onClaimed } = command;
+    const { entry, guardAccountIds, idempotency, onClaimed, onPosted } = command;
 
     return this.db.transaction(async (tx) => {
       const now = this.clock.now();
@@ -219,7 +229,11 @@ export class PostingService {
       };
       await completeIdempotencyKey(tx, idempotency, 201, stored);
 
-      return { ...stored, replayed: false };
+      const result: PostEntryResult = { ...stored, replayed: false };
+      // First execution only (a replay returned above): record atomic side
+      // effects such as the audit trail after all ledger writes (ADR-0024).
+      if (onPosted) await onPosted(tx, now, result);
+      return result;
     });
   }
 }

@@ -8,6 +8,8 @@ import {
 import { and, desc, eq, gt, isNull, lt, or } from 'drizzle-orm';
 import type { Database, DbExecutor } from '../../../database/db.types';
 import { generateToken, sha256Hex } from '../../../shared/crypto/secrets';
+import { AuditAction, AuditResource } from '../../audit/application/audit-actions';
+import { AuditService } from '../../audit/application/audit.service';
 import { devices, sessions } from '../infra/auth.schema';
 import { users, type UserRow } from '../infra/identity.schema';
 
@@ -81,6 +83,7 @@ export class SessionService {
     private readonly db: Database,
     private readonly ids: IdGenerator,
     private readonly clock: EventClock,
+    private readonly audit: AuditService,
     private readonly config: SessionConfig = DEFAULT_SESSION_CONFIG,
   ) {}
 
@@ -180,7 +183,7 @@ export class SessionService {
    * Rotate the token pair. The superseded refresh hash is retained so that its
    * reuse — the stolen-token signal — revokes the session on sight.
    */
-  async refresh(refreshToken: string): Promise<IssuedSession> {
+  async refresh(refreshToken: string, correlationId?: string): Promise<IssuedSession> {
     const hash = sha256Hex(refreshToken);
 
     // Reuse detection must OUTLIVE this transaction: throwing inside it would
@@ -207,6 +210,17 @@ export class SessionService {
           .update(sessions)
           .set({ revokedAt: now, revokedReason: 'refresh_token_reuse' })
           .where(eq(sessions.id, session.id));
+        // Record the stolen-token signal atomically with the revocation (ADR-0024).
+        await this.audit.append(tx, {
+          actorType: 'user',
+          actorId: session.userId,
+          action: AuditAction.SessionRefreshReuseRevoked,
+          resourceType: AuditResource.Session,
+          resourceId: session.id,
+          before: { revoked: false },
+          after: { revoked: true, reason: 'refresh_token_reuse' },
+          correlationId: correlationId ?? null,
+        });
         return { kind: 'reuse', sessionId: session.id };
       }
       if (
@@ -295,14 +309,36 @@ export class SessionService {
    */
   async revokeSession(
     sessionId: string,
-    options: { readonly userId?: string; readonly reason?: string } = {},
+    options: {
+      readonly userId?: string;
+      readonly reason?: string;
+      readonly correlationId?: string;
+    } = {},
   ): Promise<void> {
-    const conditions = [eq(sessions.id, sessionId), isNull(sessions.revokedAt)];
-    if (options.userId !== undefined) conditions.push(eq(sessions.userId, options.userId));
-    await this.db
-      .update(sessions)
-      .set({ revokedAt: this.clock.now(), revokedReason: options.reason ?? 'logout' })
-      .where(and(...conditions));
+    const now = this.clock.now();
+    const reason = options.reason ?? 'logout';
+    await this.db.transaction(async (tx) => {
+      const conditions = [eq(sessions.id, sessionId), isNull(sessions.revokedAt)];
+      if (options.userId !== undefined) conditions.push(eq(sessions.userId, options.userId));
+      const revoked = await tx
+        .update(sessions)
+        .set({ revokedAt: now, revokedReason: reason })
+        .where(and(...conditions))
+        .returning({ id: sessions.id, userId: sessions.userId });
+      // Only a real revocation is audited: revoking an already-dead or another
+      // user's session updates no row and records nothing (ADR-0024).
+      if (revoked.length === 0) return;
+      await this.audit.append(tx, {
+        actorType: 'user',
+        actorId: revoked[0]!.userId,
+        action: AuditAction.SessionRevoked,
+        resourceType: AuditResource.Session,
+        resourceId: sessionId,
+        before: { revoked: false },
+        after: { revoked: true, reason },
+        correlationId: options.correlationId ?? null,
+      });
+    });
   }
 
   private cappedDeadline(now: Date, ttlMs: number, absolute: Date): Date {

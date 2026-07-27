@@ -3,6 +3,8 @@ import type { IdGenerator } from '@fides/domain';
 import { DRIZZLE } from '../../database/database.module';
 import type { Database } from '../../database/db.types';
 import { ID_GENERATOR } from '../../shared/tokens';
+import { AuditModule } from '../audit/audit.module';
+import { AuditService } from '../audit/application/audit.service';
 import { IdentityModule } from '../identity/identity.module';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
 import { LedgerModule } from '../ledger/ledger.module';
@@ -20,14 +22,17 @@ import { WalletsController } from './http/wallets.controller';
  * IdentityModule supplies the SessionAuthGuard the controller depends on.
  */
 @Module({
-  imports: [LedgerModule, IdentityModule],
+  imports: [LedgerModule, IdentityModule, AuditModule],
   controllers: [AccountsController, WalletsController],
   providers: [
     {
       provide: AccountProvisioningService,
-      useFactory: (ledger: LedgerStore, ids: IdGenerator): AccountProvisioningService =>
-        new AccountProvisioningService(ledger, ids),
-      inject: [LedgerStore, ID_GENERATOR],
+      useFactory: (
+        ledger: LedgerStore,
+        ids: IdGenerator,
+        audit: AuditService,
+      ): AccountProvisioningService => new AccountProvisioningService(ledger, ids, audit),
+      inject: [LedgerStore, ID_GENERATOR, AuditService],
     },
     {
       provide: AccountService,

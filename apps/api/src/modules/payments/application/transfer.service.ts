@@ -12,6 +12,8 @@ import { sha256Hex } from '../../../shared/crypto/secrets';
 import type { Principal } from '../../identity/application/session.service';
 import { computeActionHash, consumeScaGrant } from '../../identity/application/sca-grant';
 import { WalletResolver } from '../../accounts/application/wallet-resolver';
+import { AuditAction, AuditResource } from '../../audit/application/audit-actions';
+import { AuditService } from '../../audit/application/audit.service';
 import { buildJournalEntry } from '../../ledger/domain/journal-entry';
 import { PostingDirection } from '../../ledger/domain/account';
 import { PostingService } from '../../ledger/application/posting.service';
@@ -28,6 +30,8 @@ export interface TransferCommand {
   readonly grant: string;
   /** The `Idempotency-Key` header value. */
   readonly idempotencyKey: string;
+  /** Correlation id from the request, recorded on the audit trail (ADR-0024). */
+  readonly correlationId?: string;
 }
 
 export interface TransferResult {
@@ -52,6 +56,7 @@ export class TransferService {
     private readonly wallets: WalletResolver,
     private readonly ids: IdGenerator,
     private readonly clock: EventClock,
+    private readonly audit: AuditService,
   ) {}
 
   async transfer(command: TransferCommand): Promise<TransferResult> {
@@ -112,6 +117,28 @@ export class TransferService {
           grant,
           actionHash,
           now,
+        }),
+      // Audit the executed transfer atomically, after all ledger writes (ADR-0024).
+      // Money moves target the immutable journal entry, so no before/after — the
+      // linked parameters and resulting balance are recorded as metadata.
+      onPosted: (tx, _now, posted) =>
+        this.audit.append(tx, {
+          actorType: 'user',
+          actorId: principal.userId,
+          action: AuditAction.TransferExecuted,
+          resourceType: AuditResource.JournalEntry,
+          resourceId: entry.id,
+          correlationId: command.correlationId ?? null,
+          metadata: {
+            amountMinor: amount.amount.toString(),
+            currency: amount.currency,
+            senderWalletId: sender.walletId,
+            recipientWalletId: payee.walletId,
+            recipientUserId: payee.ownerUserId,
+            senderBalanceAfterMinor:
+              posted.balances.find((balance) => balance.accountId === sender.ledgerAccountId)
+                ?.balanceMinor ?? null,
+          },
         }),
     });
 

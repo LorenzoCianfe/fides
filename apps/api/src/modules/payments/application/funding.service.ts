@@ -11,6 +11,8 @@ import { stableStringify } from '../../../shared/crypto/canonical';
 import { sha256Hex } from '../../../shared/crypto/secrets';
 import type { Principal } from '../../identity/application/session.service';
 import { WalletResolver } from '../../accounts/application/wallet-resolver';
+import { AuditAction, AuditResource } from '../../audit/application/audit-actions';
+import { AuditService } from '../../audit/application/audit.service';
 import { PostingService } from '../../ledger/application/posting.service';
 import { buildJournalEntry } from '../../ledger/domain/journal-entry';
 import { PostingDirection } from '../../ledger/domain/account';
@@ -31,6 +33,8 @@ export interface FundingCommand {
   readonly principal: Principal;
   readonly amount: MoneyJSON;
   readonly idempotencyKey: string;
+  /** Correlation id from the request, recorded on the audit trail (ADR-0024). */
+  readonly correlationId?: string;
 }
 
 export interface FundingResult {
@@ -55,6 +59,7 @@ export class FundingService {
     private readonly ids: IdGenerator,
     private readonly clock: EventClock,
     private readonly config: FundingConfig,
+    private readonly audit: AuditService,
   ) {}
 
   async fund(command: FundingCommand): Promise<FundingResult> {
@@ -107,6 +112,24 @@ export class FundingService {
         ),
         operation: FUNDING_OPERATION,
       },
+      // Audit the executed funding atomically, after all ledger writes (ADR-0024).
+      onPosted: (tx, _now, posted) =>
+        this.audit.append(tx, {
+          actorType: 'user',
+          actorId: command.principal.userId,
+          action: AuditAction.DevFundingExecuted,
+          resourceType: AuditResource.JournalEntry,
+          resourceId: entry.id,
+          correlationId: command.correlationId ?? null,
+          metadata: {
+            amountMinor: amount.amount.toString(),
+            currency: amount.currency,
+            walletId: wallet.walletId,
+            balanceAfterMinor:
+              posted.balances.find((balance) => balance.accountId === wallet.ledgerAccountId)
+                ?.balanceMinor ?? null,
+          },
+        }),
     });
 
     const walletBalance = result.balances.find(

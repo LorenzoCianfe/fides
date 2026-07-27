@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Document | Security architecture and controls |
-| Version | 0.4.0 |
+| Version | 0.5.0 |
 | Status | Living — Phase 1 controls landing |
 | Regulatory frame | EU/EEA: PSD2/SCA, GDPR (simulated, unlicensed) |
-| Last updated | 2026-07-12 |
+| Last updated | 2026-07-13 |
 
 ---
 
@@ -47,7 +47,7 @@ Note on status: Fides is a simulated core and not a licensed institution. Real c
 - Short-lived access tokens with refresh; server-side session and device records enable immediate revocation.
 - Idle and absolute session timeouts; re-authentication on sensitive actions.
 - Anomalous-session signals (new device, geo velocity) feed the risk engine.
-- Implemented (Phase 1, ADR-0020/0021): opaque hashed tokens validated against the session row on every request, rotation with reuse detection, per-device session listing and revocation over `/v1/auth`, per-IP rate limiting on the auth endpoints, and a retention sweeper (dead secrets purged promptly; dead sessions kept 90 days for forensics until the audit trail lands).
+- Implemented (Phase 1, ADR-0020/0021): opaque hashed tokens validated against the session row on every request, rotation with reuse detection, per-device session listing and revocation over `/v1/auth`, per-IP rate limiting on the auth endpoints, and a retention sweeper. Since Slice 6 (ADR-0024) dead sessions are purged **promptly** — the forensic record of any revocation or refresh-reuse revocation now lives in the tamper-evident audit trail — rather than kept for the earlier 90-day grace.
 
 ## 3. Authorization
 
@@ -118,6 +118,7 @@ The onboarding pipeline is modelled end-to-end behind mock adapters, so real pro
 - Every sensitive customer action and every administrative action is written to an **immutable, append-only audit trail**, capturing actor, action, target, before/after where applicable, timestamp, and correlation identifiers.
 - The audit trail is tamper-evident and separate from mutable application state.
 - Four-eyes approvals, assist-mode sessions, and role changes are all audited.
+- Implemented (Phase 1 Slice 6, ADR-0024): a hash-chained `audit_log` records the sensitive actions now in place — P2P transfer, dev funding, SCA step-up, session revocation and refresh-reuse revocation, and account provisioning — each written **inside the audited action's own transaction**, so no action occurs without its audit. Records capture actor (customer or `system`), action, target, timestamp, and correlation id, with before/after only for mutations of mutable state (e.g. a session revocation) and **internal references only, never raw PII**, since the trail is un-erasable. Integrity is one global chain (`sha256(prev_hash + canonical(record))`, gap-free sequence) confirmed by `verifyAuditChain`; the database rejects UPDATE/DELETE via the same append-only triggers as the ledger, so any out-of-band edit or deletion of a past record breaks the chain (deletion of the most recent record — truncation — additionally needs an external anchor, deferred). Admin read/verify surfaces over the trail arrive with admin RBAC (Slice 7).
 
 ## 9. Secure development lifecycle
 
@@ -163,6 +164,7 @@ Fides is not a licensed institution; this mapping documents how the design align
 
 | Version | Date | Change |
 |---|---|---|
+| 0.5.0 | 2026-07-13 | Phase 1 Slice 6: append-only, hash-chained audit trail (ADR-0024). Sensitive actions (P2P transfer, dev funding, SCA step-up, session revocation and refresh-reuse revocation, account provisioning) are recorded to an immutable, tamper-evident `audit_log` inside each action's own transaction; one global hash chain verified by `verifyAuditChain`, with the ledger's append-only triggers rejecting UPDATE/DELETE. Records hold internal references only (no raw PII). Dead-session retention tightened from a 90-day forensic grace to prompt purge now that the forensic record lives in the trail; the SCA-grant→session FK set to `ON DELETE CASCADE`. |
 | 0.4.0 | 2026-07-12 | Phase 1 Slice 5: PSD2 dynamic linking enforced on the internal P2P transfer (server-side action-hash recomputation, single-use grant consumed atomically in the posting transaction); object-level authorization on the wallet transaction-history read; dev funding faucet documented as a kill-switched, self-scoped interim control until admin RBAC (ADR-0023). |
 | 0.3.0 | 2026-07-12 | Phase 1 Slice 4: object-level authorization enforced on the `/v1/accounts` customer resource (session guard + server-side ownership assertion); account provisioning is event-driven and idempotent (ADR-0022). |
 | 0.2.0 | 2026-07-06 | Phase 1 Slice 3 controls implemented and annotated: passkey/WebAuthn two-factor ceremonies with anti-enumeration, opaque server-side sessions with immediate revocation (ADR-0020); SCA step-up with dynamic linking, auth rate limiting, and the retention sweeper (ADR-0021). |

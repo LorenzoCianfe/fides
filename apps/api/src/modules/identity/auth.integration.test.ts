@@ -5,6 +5,7 @@ import { createTestDb, resetDb, type TestDatabase } from '../../../test/db';
 import { CapturingNotifications } from '../../../test/notifications';
 import { SoftwareAuthenticator, type AuthenticationCeremonyInput } from '../../../test/webauthn';
 import { UuidV7Generator } from '../../shared/ids/uuid-v7';
+import { AuditService } from '../audit/application/audit.service';
 import { MockKycAdapter } from '../kyc/infra/mock-kyc.adapter';
 import { EmailVerificationService } from './application/email-verification.service';
 import { RegistrationService, type RegisterInput } from './application/registration.service';
@@ -37,8 +38,9 @@ const emailVerification = new EmailVerificationService(
   clock,
   notifications,
 );
-const sessions = new SessionService(db as TestDatabase, ids, clock);
-const webauthn = new WebAuthnService(db as TestDatabase, ids, clock, sessions, RP);
+const audit = new AuditService(db as TestDatabase, ids, clock);
+const sessions = new SessionService(db as TestDatabase, ids, clock, audit);
+const webauthn = new WebAuthnService(db as TestDatabase, ids, clock, sessions, RP, audit);
 
 const baseInput: Omit<RegisterInput, 'email'> = {
   givenName: 'Alice',
@@ -360,7 +362,7 @@ describe('sessions (integration)', () => {
   });
 
   it('expires the access token while the refresh path stays alive within the idle window', async () => {
-    const shortSessions = new SessionService(db as TestDatabase, ids, clock, {
+    const shortSessions = new SessionService(db as TestDatabase, ids, clock, audit, {
       accessTtlMs: 1_000,
       refreshIdleTtlMs: 5_000,
       absoluteTtlMs: 8_000,
@@ -377,7 +379,7 @@ describe('sessions (integration)', () => {
   });
 
   it('kills the session when the idle window elapses without a refresh', async () => {
-    const shortSessions = new SessionService(db as TestDatabase, ids, clock, {
+    const shortSessions = new SessionService(db as TestDatabase, ids, clock, audit, {
       accessTtlMs: 1_000,
       refreshIdleTtlMs: 5_000,
       absoluteTtlMs: 8_000,
@@ -392,7 +394,7 @@ describe('sessions (integration)', () => {
   });
 
   it('caps every extension at the absolute deadline', async () => {
-    const shortSessions = new SessionService(db as TestDatabase, ids, clock, {
+    const shortSessions = new SessionService(db as TestDatabase, ids, clock, audit, {
       accessTtlMs: 1_000,
       refreshIdleTtlMs: 5_000,
       absoluteTtlMs: 8_000,
