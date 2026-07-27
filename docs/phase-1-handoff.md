@@ -7,7 +7,7 @@
 | Verified | `apps/api` 129/129 tests green; lint, typecheck, and production build clean |
 | Last updated | 2026-07-13 |
 
-> Resume point: **Slice 7 (Admin RBAC + MFA + four-eyes)**. Slice 6 (append-only, hash-chained audit trail, ADR-0024) is **done**. Read §4 (locked decisions) before writing code — the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) holds for all new surface. Slice 6 added the `audit` module: an immutable, tamper-evident `audit_log` written inside each sensitive action's own transaction (transfer, funding, step-up, session revocation and refresh-reuse, provisioning), one global hash chain verified by `verifyAuditChain`, and — per its revisit of ADR-0021 — prompt dead-session purge. Slice 7 will add the admin RBAC that gates a read/verify surface over the trail. Auth policy is pinned in ADR-0020/0021; the account model in ADR-0022; transfer/funding/history in ADR-0023; the audit trail in ADR-0024.
+> Resume point: **Slice 7 (Admin RBAC + MFA + four-eyes)**. Slice 6 (append-only, hash-chained audit trail, ADR-0024) is **done**. Read §4 (locked decisions) before writing code — the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) holds for all new surface. Slice 6 added the `audit` module: an immutable, tamper-evident `audit_log` written inside each sensitive action's own transaction (transfer, funding, step-up, session revocation and refresh-reuse, provisioning), one global hash chain verified by `verifyAuditChain`, and — per its revisit of ADR-0021 — prompt dead-session purge. Slice 7 will add the admin RBAC that gates a read/verify surface over the trail; **its scope and the four delegated calls are already agreed — see §5 before starting, and write ADR-0025 first**. Auth policy is pinned in ADR-0020/0021; the account model in ADR-0022; transfer/funding/history in ADR-0023; the audit trail in ADR-0024.
 
 ---
 
@@ -91,7 +91,7 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 | Token transport | **Body-only in Phase 1; bearer header for access. httpOnly-cookie mode deferred to Slice 8** | ADR-0021 |
 | SCA step-up | Action-hashed `sca` challenge → fresh assertion → single-use grant; **consumed inside the posting transaction via `PostEntryCommand.onClaimed`, enforced on the P2P transfer** | ADR-0021/0023 (done) |
 | P2P transfer | SCA-gated, idempotent (`Idempotency-Key` → per-actor table); action hash recomputed from executed params (dynamic linking); recipient by email; `Dr sender / Cr recipient`, sender guarded | ADR-0023 (done) |
-| Dev funding | Self-service faucet from `system:settlement` (asset), kill-switched (`DEV_FUNDING_ENABLED`, off by default) + capped, no SCA; interim until admin RBAC | ADR-0023 (done) |
+| Dev funding | Self-service faucet from `system:settlement` (asset), kill-switched (`DEV_FUNDING_ENABLED`, off by default) + capped, no SCA; **to be retired in Slice 7** by the admin-only four-eyes funding operation | ADR-0023 (done) |
 | Transaction history | Wallet-scoped `GET /v1/wallets/:walletId/transactions`, ownership-scoped, keyset-paginated; balance stays on the account resource | ADR-0023 (done) |
 | Enumeration posture | Login decoys + uniform email-keyed verify/resend; **registration keeps explicit 409** (throttled) | ADR-0020/0021 |
 | Rate limiting | `@nestjs/throttler` in-memory, module-scoped, `THROTTLE_ENABLED` kill-switch | ADR-0021 (done) |
@@ -101,7 +101,7 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"). The dou
 | Balance model | Synchronous in-transaction balance projection, authoritative for funds checks | ADR-0019 (done) |
 | Append-only | DB triggers reject UPDATE/DELETE on the ledger tables and the audit trail | Done |
 | Audit | Append-only, hash-chained `audit_log`; append in-transaction via `AuditService`; one global chain; `verifyAuditChain`; internal refs only, no PII | ADR-0024 (done) |
-| Admin | Full RBAC + MFA + four-eyes built in Slice 7 | Slice 7 |
+| Admin | Separate `admins` entity + parallel shorter-TTL admin session; **password + TOTP** (not passkeys); role matrix + `@RequirePermission`; four-eyes proven on admin funding, breadth deferred to Phase 2/3 | ADR-0011, scope agreed (§5) |
 | Test topology | Everything under `pnpm test` (Testcontainers); HTTP suites boot the real `AppModule` | Done |
 | Clients | API + tests first; clients (Slice 8) last | Sequencing |
 
@@ -121,8 +121,22 @@ Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` 
 - New `audit` module: append-only, hash-chained `audit_log` (migration `0008`, guarded by the ledger's append-only triggers), `AuditService.append` (in-transaction, advisory-lock, one global chain) and a pure `verifyAuditChain`. Wired into the six sensitive actions — transfer and funding (new symmetric `onPosted` hook, first-execution-only), SCA step-up grant, session revocation and refresh-reuse revocation, and account provisioning (`system` actor). Correlation id threaded from each controller; records hold internal references only (no raw PII).
 - Retention revisit (ADR-0021 → ADR-0024): dead sessions purged promptly; SCA-grant→session FK is `ON DELETE CASCADE` (migration `0009`). No read/verify HTTP surface yet — it lands with admin RBAC (Slice 7). 129 tests.
 
-### Slices 7–8 (per `roadmap.md`)
-- **7 Admin (NEXT):** RBAC, segregation of duties, four-eyes, admin MFA (TOTP), read-only views — including the first read/verify surface over the audit trail.
+### Slice 7 — Admin RBAC + MFA + four-eyes — NEXT (scope agreed, ADR-0025 to be written)
+
+Discovery for this slice is **done**; the four delegated calls below were decided on 2026-07-13 and should be honored, not re-litigated. `roadmap.md` scopes Phase 1 admin as "read-only user/account and ledger views", while ADR-0011 mandates RBAC + MFA + four-eyes; the agreed reconciliation is to build the admin foundation and prove four-eyes on the one genuinely sensitive admin action that exists in Phase 1.
+
+| Call | Decision |
+|---|---|
+| Scope | Admin foundation (identity, RBAC, MFA, shorter sessions) + read-only views + admin-action auditing, **plus maker-checker proven end to end on admin funding**. Four-eyes *breadth* (suspension, reversal, card freeze) deferred to Phase 2/3, where those actions first exist. |
+| Admin identity | A **separate `admins` entity** with `AdminAuthGuard`/`AdminPrincipal` and a dedicated, shorter-TTL admin session (reusing the ADR-0020 opaque-hashed-token pattern for immediate revocation). Customer and admin auth stay isolated; `assertResourceOwnership` remains customer-only. |
+| Admin auth | **Password + TOTP.** Deliberately unlike the customer stack (passkey-only, no passwords): it keeps the back office isolated from the customer WebAuthn machinery, which is today coupled to `users`/`credentials`. |
+| Dev funding faucet | **Retired.** `POST /v1/dev/funding` is replaced by the admin-only, four-eyes funding operation, closing the ADR-0023 known gap. |
+
+Recommended finer calls (agreed in the same session): `scrypt` (`node:crypto`) for password hashing, Argon2id noted as later hardening; a minimal RFC-6238 TOTP on `node:crypto` (unit-tested against the RFC vectors) rather than a new dependency; role enum (`super_admin`, `compliance_officer`, `fraud_analyst`, `support_agent`, `auditor`) + a code-defined permission matrix + a `@RequirePermission` guard, single role per admin in Phase 1; a generic `pending_admin_actions` table with exactly one registered type (`admin_funding`), SoD enforced by `checker_id != maker_id` plus role; the deferred **audit read (paginated) + `verify`** surface behind `auditor`-or-higher; first `super_admin` seeded from env only when no admin exists; admin session 30-min idle / 8-hour absolute (env-tunable). Assist / "view-as-customer" mode is **deferred to Phase 2**.
+
+Known ripples to plan for: the audit `actor_type` enum needs `'admin'` added (small enum-alter migration; the Slice 6 schema anticipated it); and retiring the faucet breaks the payments HTTP suite's `fund()` seeding helper, so those tests must re-seed via admin funding or a direct ledger seed. **TOTP secrets cannot be hashed** (verification needs the secret), so storing them at rest is an accepted interim gap until field-level/KMS encryption (`security.md` §6.2) exists — record it in §8 when the slice lands.
+
+### Slice 8 (per `roadmap.md`)
 - **8 Clients:** web + mobile with full passkeys; add the httpOnly-cookie transport mode for web (ADR-0021) plus security headers (helmet/HSTS); Playwright happy-path; i18n scaffolding.
 
 ## 6. Environment & workflow notes
