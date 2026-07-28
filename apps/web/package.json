@@ -14,9 +14,9 @@
   "dependencies": {
     "@fides/ui-tokens": "workspace:*",
     "@fides/ui-web": "workspace:*",
-    "next": "^15.1.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "next": "^15.5.22",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@fides/config": "workspace:*",

@@ -32,7 +32,7 @@
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.0",
     "@fides/domain": "workspace:*",
-    "openapi3-ts": "^4.4.0",
+    "openapi3-ts": "^4.6.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
