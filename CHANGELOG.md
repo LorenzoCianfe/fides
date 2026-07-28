@@ -69,6 +69,7 @@ All notable changes to this project are documented here. The format is based on
 
 ### Security
 
+- Known issue (2026-07-28): CI's `pnpm audit --prod --audit-level=high` gate is failing on `main` with 34 advisories (15 high) against `next`, `sharp` (via Expo), `brace-expansion`, and `js-yaml`. None are reachable from `apps/api`; all belong to the web, admin, and mobile shells and have been in the tree since Phase 0. `main` had not run CI since 2026-07-05, so three weeks of newly-published advisories surfaced together. The fixes are minor/patch bumps within the pinned majors and are the first task of Slice 8.
 - Upgraded `drizzle-orm` to >= 0.45.2 to resolve a SQL-injection advisory (GHSA-gpj5-g38j-94v9) in the ledger ORM.
 - Pinned patched transitive dependencies via pnpm overrides: `multer` >= 2.1.0 (DoS) and `glob` >= 10.5.0 (CLI command injection).
 - CI secret scanning runs gitleaks against the working tree for deterministic results; one unfixable transitive advisory (lodash `_.template`, no published fix) is explicitly ignored with justification.
