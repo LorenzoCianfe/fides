@@ -69,10 +69,11 @@ export class WalletResolver {
   }
 
   /**
-   * A wallet by id, ownership-checked for the read surface. Unknown id → 404;
-   * another user's wallet → 403 (consistent with the accounts read surface).
+   * A wallet by id, with no ownership check. For callers that authorize by
+   * capability rather than ownership — the back office (ADR-0025) and the
+   * admin funding executor — never for a customer-facing route.
    */
-  async resolveOwnedWallet(principal: Principal, walletId: string): Promise<ResolvedWallet> {
+  async resolveWallet(walletId: string): Promise<ResolvedWallet> {
     const [row] = await this.db
       .select({
         walletId: wallets.id,
@@ -86,8 +87,18 @@ export class WalletResolver {
       .where(eq(wallets.id, walletId))
       .limit(1);
     if (!row) throw new NotFoundError('Wallet not found', { walletId });
-    assertResourceOwnership(principal, row.ownerUserId, { walletId });
     return toResolved(row);
+  }
+
+  /**
+   * A wallet by id, ownership-checked for the customer read surface. Unknown id
+   * → 404; another user's wallet → 403 (consistent with the accounts read
+   * surface).
+   */
+  async resolveOwnedWallet(principal: Principal, walletId: string): Promise<ResolvedWallet> {
+    const wallet = await this.resolveWallet(walletId);
+    assertResourceOwnership(principal, wallet.ownerUserId, { walletId });
+    return wallet;
   }
 }
 

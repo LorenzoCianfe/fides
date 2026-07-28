@@ -1,4 +1,4 @@
-import { DevFundingRequestSchema, TransferRequestSchema } from '@fides/contracts';
+import { TransferRequestSchema } from '@fides/contracts';
 import { createZodDto } from 'nestjs-zod';
 
 /**
@@ -6,5 +6,3 @@ import { createZodDto } from 'nestjs-zod';
  * Contracts stay framework-free; only this file knows Nest.
  */
 export class TransferRequestDto extends createZodDto(TransferRequestSchema) {}
-
-export class DevFundingRequestDto extends createZodDto(DevFundingRequestSchema) {}

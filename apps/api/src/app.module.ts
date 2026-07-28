@@ -3,6 +3,7 @@ import { EnvModule } from './config/env.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { AccountsModule } from './modules/accounts/accounts.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { KycModule } from './modules/kyc/kyc.module';
@@ -23,6 +24,7 @@ import { SharedModule } from './shared/shared.module';
     IdentityModule,
     AccountsModule,
     PaymentsModule,
+    AdminModule,
     OperationsModule,
   ],
 })

@@ -176,7 +176,7 @@ describe('audit trail (integration)', () => {
         audit.append(tx, {
           actorType: 'user',
           actorId: ACTOR,
-          action: AuditAction.DevFundingExecuted,
+          action: AuditAction.AdminFundingExecuted,
           resourceType: AuditResource.JournalEntry,
           resourceId: executed.id,
           metadata: {
@@ -196,7 +196,7 @@ describe('audit trail (integration)', () => {
         audit.append(tx, {
           actorType: 'user',
           actorId: ACTOR,
-          action: AuditAction.DevFundingExecuted,
+          action: AuditAction.AdminFundingExecuted,
           resourceType: AuditResource.JournalEntry,
           resourceId: replayed.id,
         }),
@@ -207,7 +207,7 @@ describe('audit trail (integration)', () => {
 
     const rows = await db.select().from(auditLog);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.action).toBe(AuditAction.DevFundingExecuted);
+    expect(rows[0]!.action).toBe(AuditAction.AdminFundingExecuted);
     // The recorded resource is the executed entry, never the replay's.
     expect(rows[0]!.resourceId).toBe(executed.id);
     expect(await audit.verify()).toEqual({ ok: true, count: 1, brokenAtSeq: null });

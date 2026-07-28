@@ -10,8 +10,11 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 
-/** Who performed the action: an authenticated customer, or the platform itself. */
-export const auditActorEnum = pgEnum('audit_actor_type', ['user', 'system']);
+/**
+ * Who performed the action: an authenticated customer, a back-office operator
+ * (ADR-0025), or the platform itself.
+ */
+export const auditActorEnum = pgEnum('audit_actor_type', ['user', 'system', 'admin']);
 
 /**
  * Append-only, hash-chained audit trail (ADR-0024): one row per sensitive

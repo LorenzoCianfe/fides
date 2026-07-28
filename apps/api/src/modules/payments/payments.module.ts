@@ -13,14 +13,20 @@ import { LedgerStore } from '../ledger/infra/ledger.repository';
 import { LedgerModule } from '../ledger/ledger.module';
 import { FundingService } from './application/funding.service';
 import { TransferService } from './application/transfer.service';
-import { DevFundingController } from './http/dev-funding.controller';
 import { TransfersController } from './http/transfers.controller';
 
 /**
- * Payments module (Slice 5, ADR-0023): the SCA-gated internal P2P transfer and
- * the dev funding faucet. Both post through the ledger's PostingService; wallet
- * resolution comes from AccountsModule and the session guard from IdentityModule.
- * The throttler is module-scoped with the same env kill-switch as the auth surface.
+ * Payments module (Slice 5, ADR-0023): the SCA-gated internal P2P transfer, and
+ * the funding path that credits a wallet from settlement. Both post through the
+ * ledger's PostingService; wallet resolution comes from AccountsModule and the
+ * session guard from IdentityModule. The throttler is module-scoped with the
+ * same env kill-switch as the auth surface.
+ *
+ * Funding has no HTTP surface of its own: Slice 7 retired the self-service dev
+ * faucet, and the operation is now reached only through the admin four-eyes
+ * workflow, which calls `FundingService` (ADR-0025). The posting logic stays
+ * here, where the ledger integration lives, rather than being duplicated in the
+ * admin module.
  */
 @Module({
   imports: [
@@ -36,7 +42,7 @@ import { TransfersController } from './http/transfers.controller';
       }),
     }),
   ],
-  controllers: [TransfersController, DevFundingController],
+  controllers: [TransfersController],
   providers: [
     {
       provide: TransferService,
@@ -66,14 +72,12 @@ import { TransfersController } from './http/transfers.controller';
           wallets,
           ids,
           clock,
-          {
-            enabled: env.DEV_FUNDING_ENABLED,
-            maxMinor: BigInt(env.DEV_FUNDING_MAX_MINOR),
-          },
+          { maxMinor: BigInt(env.ADMIN_FUNDING_MAX_MINOR) },
           audit,
         ),
       inject: [LedgerStore, PostingService, WalletResolver, ID_GENERATOR, CLOCK, ENV, AuditService],
     },
   ],
+  exports: [FundingService],
 })
 export class PaymentsModule {}

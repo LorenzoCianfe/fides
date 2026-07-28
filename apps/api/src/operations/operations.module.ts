@@ -5,6 +5,7 @@ import { DRIZZLE } from '../database/database.module';
 import type { Database } from '../database/db.types';
 import { AccountsModule } from '../modules/accounts/accounts.module';
 import { AccountProvisioningService } from '../modules/accounts/application/account-provisioning.service';
+import { AdminModule } from '../modules/admin/admin.module';
 import { IdentitySweeper } from '../modules/identity/application/identity-sweeper';
 import { KYC_APPROVED_EVENT, type KycApprovedPayload } from '../modules/kyc/application/kyc-events';
 import {
@@ -20,10 +21,11 @@ import { OperationsScheduler } from './operations.scheduler';
 /**
  * Background operations: the outbox dispatcher with its handler registry
  * (event types without a handler stay pending for their future consumer) and
- * the ADR-0021 retention sweeper, both driven by env-tunable intervals.
+ * the ADR-0021 retention sweepers — customer and back-office — all driven by
+ * env-tunable intervals.
  */
 @Module({
-  imports: [ScheduleModule.forRoot(), LedgerModule, AccountsModule],
+  imports: [ScheduleModule.forRoot(), LedgerModule, AccountsModule, AdminModule],
   providers: [
     {
       provide: OutboxDispatcher,
@@ -48,6 +50,8 @@ import { OperationsScheduler } from './operations.scheduler';
     },
     OperationsScheduler,
   ],
+  // AdminSweeper is consumed here but owned and exported by AdminModule, so it
+  // is not re-exported: a module may only export its own providers.
   exports: [OutboxDispatcher, IdentitySweeper],
 })
 export class OperationsModule {}

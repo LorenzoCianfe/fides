@@ -3,6 +3,7 @@ import {
   generateOpenApiDocument,
   HealthResponseSchema,
   registerAccountPaths,
+  registerAdminPaths,
   registerAuthPaths,
   registerPaymentPaths,
 } from '@fides/contracts';
@@ -32,6 +33,7 @@ export function buildOpenApiDocument(appName: string, version: string): OpenAPIO
   registerAuthPaths(registry);
   registerAccountPaths(registry);
   registerPaymentPaths(registry);
+  registerAdminPaths(registry);
 
   const document = generateOpenApiDocument(registry, { title: `${appName} API`, version });
   return document as unknown as OpenAPIObject;

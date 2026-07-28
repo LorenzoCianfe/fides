@@ -17,12 +17,8 @@ const posting = new PostingService(db as TestDatabase, ids, clock);
 const wallets = new WalletResolver(db as TestDatabase);
 const audit = new AuditService(db as TestDatabase, ids, clock);
 
-const principal = {
-  userId: '00000000-0000-7000-8000-000000000001',
-  sessionId: '00000000-0000-7000-8000-000000000002',
-  deviceId: '00000000-0000-7000-8000-000000000003',
-  userStatus: 'active' as const,
-};
+const actor = { type: 'admin' as const, adminId: '00000000-0000-7000-8000-000000000001' };
+const UNKNOWN_WALLET = '00000000-0000-7000-8000-0000000000ff';
 
 function fundingService(config: FundingConfig): FundingService {
   return new FundingService(ledger, posting, wallets, ids, clock, config, audit);
@@ -33,44 +29,51 @@ function eur(minor: string) {
 }
 
 /**
- * The dev funding faucet's gate (kill-switch, cap, currency) short-circuits
- * before any wallet or ledger work, so these assertions need no provisioned
- * state. The funding money-path itself is proven end to end in the HTTP suite.
+ * The funding amount rules short-circuit before any wallet or ledger work, so
+ * these assertions need no provisioned state. Since Slice 7 they are shared by
+ * both entry points: the four-eyes maker calls `validateRequest` when filing a
+ * request, and `fund` re-applies them at execution — the point of keeping the
+ * rules in one place. The money path itself is proven end to end, through the
+ * real approval journey, in the admin HTTP suite.
  */
-describe('dev funding gating (integration)', () => {
+describe('admin funding validation (integration)', () => {
   afterAll(async () => {
     await close();
   });
 
-  it('answers 404 when the faucet is disabled', async () => {
-    const service = fundingService({ enabled: false, maxMinor: 1_000_000n });
-    await expect(
-      service.fund({ principal, amount: eur('1000'), idempotencyKey: 'k' }),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
-  });
-
   it('rejects an amount above the configured maximum', async () => {
-    const service = fundingService({ enabled: true, maxMinor: 1_000n });
+    const service = fundingService({ maxMinor: 1_000n });
+    await expect(service.validateRequest(UNKNOWN_WALLET, eur('2000'))).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
     await expect(
-      service.fund({ principal, amount: eur('2000'), idempotencyKey: 'k' }),
+      service.fund({
+        actor,
+        targetWalletId: UNKNOWN_WALLET,
+        amount: eur('2000'),
+        idempotencyKey: 'k',
+      }),
     ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
   });
 
   it('rejects a non-positive amount', async () => {
-    const service = fundingService({ enabled: true, maxMinor: 1_000_000n });
-    await expect(
-      service.fund({ principal, amount: eur('0'), idempotencyKey: 'k' }),
-    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    const service = fundingService({ maxMinor: 1_000_000n });
+    await expect(service.validateRequest(UNKNOWN_WALLET, eur('0'))).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
   });
 
   it('rejects a non-EUR amount in Phase 1', async () => {
-    const service = fundingService({ enabled: true, maxMinor: 1_000_000n });
+    const service = fundingService({ maxMinor: 1_000_000n });
     await expect(
-      service.fund({
-        principal,
-        amount: { amount: '1000', currency: 'USD' },
-        idempotencyKey: 'k',
-      }),
+      service.validateRequest(UNKNOWN_WALLET, { amount: '1000', currency: 'USD' }),
     ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+
+  it('rejects an unknown target wallet before any ledger work', async () => {
+    const service = fundingService({ maxMinor: 1_000_000n });
+    await expect(service.validateRequest(UNKNOWN_WALLET, eur('1000'))).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
   });
 });

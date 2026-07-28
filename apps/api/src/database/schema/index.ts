@@ -6,4 +6,5 @@ export * from '../../modules/identity/infra/auth.schema';
 export * from '../../modules/kyc/infra/kyc.schema';
 export * from '../../modules/accounts/infra/accounts.schema';
 export * from '../../modules/audit/infra/audit.schema';
+export * from '../../modules/admin/infra/admin.schema';
 export * from '../../shared/idempotency/idempotency.schema';

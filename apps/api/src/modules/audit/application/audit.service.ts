@@ -15,7 +15,7 @@ export const GENESIS_PREV_HASH = '0'.repeat(64);
  */
 const AUDIT_CHAIN_LOCK_KEY = 741_852_963;
 
-export type AuditActorType = 'user' | 'system';
+export type AuditActorType = 'user' | 'system' | 'admin';
 
 /** A JSON snapshot for `before`/`after`/`metadata`: string/boolean-valued only. */
 export type AuditJson = Record<string, unknown>;

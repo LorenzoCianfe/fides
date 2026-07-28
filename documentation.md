@@ -5,10 +5,10 @@
 | Field | Value |
 |---|---|
 | Document | Master platform documentation |
-| Version | 0.9.0 |
-| Status | Phase 1 (Walking skeleton) — in progress |
+| Version | 0.10.0 |
+| Status | Phase 1 (Walking skeleton) — backend complete, clients remaining |
 | Scope | Simulated-core EU neobank (iOS, Android, web) + admin back office |
-| Last updated | 2026-07-13 |
+| Last updated | 2026-07-28 |
 
 ---
 
@@ -208,6 +208,7 @@ ADRs are maintained under `docs/adr/` (see the [index](docs/adr/README.md)). The
 | 0022 | Account provisioning and the account/wallet/ledger-account model (refines 0005, 0019) | Accepted |
 | 0023 | Internal P2P transfer: SCA enforcement, dev funding, and the transaction-history read (refines 0019, 0021, 0022) | Accepted |
 | 0024 | Append-only, hash-chained audit trail (refines 0005, 0019, 0021) | Accepted |
+| 0025 | Admin identity, RBAC, MFA, and four-eyes on admin funding (refines 0011) | Accepted |
 
 ## 9. Versioning and change log
 
@@ -224,6 +225,7 @@ The platform follows semantic versioning. This document's version tracks documen
 | 0.7.0 | 2026-07-12 | Phase 1 Slice 4: accounts & wallets. Event-driven, idempotent account provisioning consumes `kyc.approved` inside the outbox dispatcher's transaction, creating one EUR account + a single wallet + a backing ledger account (`wallet:<walletId>`, liability). Account read surface (`GET /v1/accounts`, `GET /v1/accounts/{accountId}`) with live balances read from the authoritative ledger projection (ADR-0019), session-guarded and ownership-scoped. ADR-0022 added. |
 | 0.8.0 | 2026-07-12 | Phase 1 Slice 5: internal instant P2P transfer + dev funding. `POST /v1/transfers` — idempotent, SCA-gated transfer with PSD2 dynamic linking enforced inside the posting transaction (action hash recomputed from the executed amount/payee; single-use grant consumed via a new `onClaimed` hook so it fires exactly once and replays skip it). Kill-switched dev funding faucet (`POST /v1/dev/funding`) and a keyset-paginated, ownership-scoped wallet transaction history (`GET /v1/wallets/{walletId}/transactions`). Proves the Phase 1 exit criteria end to end (115 tests). ADR-0023 added. |
 | 0.9.0 | 2026-07-13 | Phase 1 Slice 6: append-only, hash-chained audit trail. A new `audit` module records sensitive actions (P2P transfer, dev funding, SCA step-up, session revocation and refresh-reuse revocation, account provisioning) to an immutable `audit_log` (migration `0008`) inside each action's own transaction — a money move via a new symmetric `onPosted` hook on the posting path. One global hash chain (`sha256(prev_hash + canonical(record))`, gap-free `seq`, advisory-lock append) whose integrity a pure `verifyAuditChain` confirms; the ledger's append-only triggers reject UPDATE/DELETE, so tampering breaks the chain. Records hold internal references only (no raw PII). Dead-session retention tightened to prompt purge now that the forensic record lives in the trail; the SCA-grant→session FK became `ON DELETE CASCADE` (migration `0009`). ADR-0024 added. 129 tests. |
+| 0.10.0 | 2026-07-28 | Phase 1 Slice 7: admin RBAC, MFA, and four-eyes. A new `admin` module (migration `0010`) gives the back office a separate `admins` identity — its own guard, principal, session table, and token prefix, sharing no table or code path with customer authentication. Two-step login: a password yields only a single-use challenge, and the session is issued solely after an RFC 6238 TOTP code verifies (scrypt passwords, an in-house TOTP tested against the RFC vectors, a strictly-increasing accepted step so codes cannot be replayed). Sessions are one opaque token with a 30-minute sliding idle window and an 8-hour absolute cap. Authorization runs through a code-defined role→permission matrix behind `@RequirePermission`, with segregation of duties made structural: `super_admin` is deliberately denied the funding *request* permission, so no role holds both halves, and a test asserts it. Four-eyes is proven end to end on admin funding — the credit posts inside the same transaction that decides the request. Read-only views cover customers, wallet history, ledger reconciliation, and the audit read/verify surface deferred from Slice 6. The Slice 5 dev funding faucet is retired. ADR-0025 added. 219 tests. |
 
 ## 10. Glossary
 

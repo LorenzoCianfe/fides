@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { ENV, type Env } from '../config/env';
+import { AdminSweeper } from '../modules/admin/application/admin-sweeper';
 import { IdentitySweeper } from '../modules/identity/application/identity-sweeper';
 import { OutboxDispatcher } from '../shared/outbox/outbox.dispatcher';
 
@@ -10,8 +11,9 @@ export const IDENTITY_SWEEP_INTERVAL = 'identity-sweep';
 /**
  * Arms the background intervals (env-tunable, kill-switched via
  * SCHEDULERS_ENABLED): outbox dispatch keeps projections converging; the
- * sweeper applies the ADR-0021 retention policy. Passes are overlap-guarded so
- * a slow run is never stacked on, and failures are logged, never swallowed.
+ * sweepers apply the ADR-0021 retention policy to customer and back-office
+ * security rows alike. Passes are overlap-guarded so a slow run is never
+ * stacked on, and failures are logged, never swallowed.
  */
 @Injectable()
 export class OperationsScheduler implements OnModuleInit {
@@ -24,6 +26,7 @@ export class OperationsScheduler implements OnModuleInit {
     @Inject(ENV) private readonly env: Env,
     @Inject(OutboxDispatcher) private readonly dispatcher: OutboxDispatcher,
     @Inject(IdentitySweeper) private readonly sweeper: IdentitySweeper,
+    @Inject(AdminSweeper) private readonly adminSweeper: AdminSweeper,
     @Inject(SchedulerRegistry) private readonly registry: SchedulerRegistry,
   ) {}
 
@@ -65,18 +68,24 @@ export class OperationsScheduler implements OnModuleInit {
     }
   }
 
-  /** One retention sweep; also callable directly (tests, manual operations). */
+  /**
+   * One retention sweep across the customer and back-office security rows; also
+   * callable directly (tests, manual operations).
+   */
   async sweepIdentity(): Promise<void> {
     if (this.sweeping) return;
     this.sweeping = true;
     try {
       const result = await this.sweeper.sweep();
+      const admin = await this.adminSweeper.sweep();
       const total =
         result.scaGrants +
         result.webauthnChallenges +
         result.enrolmentTokens +
         result.emailVerifications +
-        result.sessions;
+        result.sessions +
+        admin.loginChallenges +
+        admin.sessions;
       if (total > 0) this.logger.log(`Swept ${total} dead security row(s)`);
     } catch (error) {
       this.logger.error(

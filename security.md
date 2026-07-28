@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Document | Security architecture and controls |
-| Version | 0.5.0 |
+| Version | 0.6.0 |
 | Status | Living — Phase 1 controls landing |
 | Regulatory frame | EU/EEA: PSD2/SCA, GDPR (simulated, unlicensed) |
-| Last updated | 2026-07-13 |
+| Last updated | 2026-07-28 |
 
 ---
 
@@ -56,7 +56,8 @@ Note on status: Fides is a simulated core and not a licensed institution. Real c
 - Every API request is authorized server-side against the authenticated principal and resource ownership. Object-level checks prevent access to another user's accounts, cards, or data.
 - Input is validated against shared Zod schemas; the API never trusts client-supplied identifiers implicitly.
 - Implemented (Phase 1, Slice 4): the `/v1/accounts` read surface is session-guarded and ownership-scoped — the list is bound to the authenticated principal and the single-account read resolves the owner server-side and asserts ownership (`assertResourceOwnership`), so one user's account id cannot be used to read another's. Account identifiers are non-enumerable UUID v7.
-- Implemented (Phase 1, Slice 5, ADR-0023): the wallet transaction-history read (`GET /v1/wallets/{walletId}/transactions`) resolves the wallet to its owner server-side and asserts ownership before returning any history, so a wallet id cannot be used to read another user's transactions. The P2P transfer and dev funding are money-moving operations and require an `Idempotency-Key`. The dev funding faucet (`POST /v1/dev/funding`) credits only the caller's own wallet, is amount-capped, and is gated by `DEV_FUNDING_ENABLED` (off by default; answers 404 when disabled) — an explicit, controlled development affordance to be replaced by an admin-only, four-eyes funding operation when admin RBAC lands (Slice 7). It must remain disabled in shared environments.
+- Implemented (Phase 1, Slice 5, ADR-0023): the wallet transaction-history read (`GET /v1/wallets/{walletId}/transactions`) resolves the wallet to its owner server-side and asserts ownership before returning any history, so a wallet id cannot be used to read another user's transactions. The P2P transfer is a money-moving operation and requires an `Idempotency-Key`.
+- Closed (Phase 1, Slice 7, ADR-0025): the self-service dev funding faucet (`POST /v1/dev/funding`) and its `DEV_FUNDING_ENABLED` kill-switch are **retired**. A customer can no longer credit their own wallet by any route. Funding is now an admin-only operation reached solely through the four-eyes workflow (§3.2), authorized by role rather than by configuration and still bounded by a per-request cap (`ADMIN_FUNDING_MAX_MINOR`).
 
 ### 3.2 Admin authorization (back office)
 
@@ -65,6 +66,19 @@ Note on status: Fides is a simulated core and not a licensed institution. Real c
 - **Four-eyes (maker-checker):** high-risk operations (account suspension, fund reversal, limit override, KYC override) are requested by one operator and approved by another.
 - **Mandatory admin MFA** and shorter session lifetimes for all back-office access.
 - **Scoped access:** admins see only what their role requires; the audited "assist / view-as-customer" mode is explicit, time-boxed, and logged.
+
+Implemented (Phase 1, Slice 7, ADR-0025):
+
+- **Separate admin identity.** Back-office operators live in their own `admins` table with their own guard, principal, session table, and token prefix (`ast_`, versus the customer `fat_`). Customer and admin authentication share no table and no code path, so no customer-facing authorization defect can yield back-office access, and `assertResourceOwnership` keeps a single, customer-only meaning. Admin authorization is by **capability, never ownership**.
+- **Two independent factors, in two steps.** A correct password returns only a single-use, five-minute, hashed **login challenge** — never a session. The session is issued solely by `POST /v1/admin/auth/mfa/verify` after an RFC 6238 TOTP code verifies, so no back-office session can rest on one factor. Passwords are hashed with scrypt (N=2^15, r=8, p=1) in a self-describing format so work factors can be raised without a migration, and login failures are uniform and constant-time across unknown, disabled, and wrong-password admins. A TOTP code cannot be replayed even inside its own validity window (a strictly-increasing accepted time step). The TOTP implementation is verified against the RFC 6238 test vectors.
+- **Enrolment without a shared secret.** The bootstrap admin is seeded from configuration only when **no admin exists at all**, so configuration cannot add or reset an operator once the back office is live. It carries no second factor: the secret is generated on first login, returned exactly once, and activated only when a code minted from it verifies. Newly staffed admins follow the same path.
+- **Shorter sessions.** One opaque 256-bit token stored only as a SHA-256 hash, with a **30-minute sliding idle window** and a hard **8-hour absolute cap** (both env-tunable). Every request is validated against the row, so revocation and account disablement take effect immediately rather than at the next expiry. Dead admin sessions and spent login challenges are purged promptly by the retention sweeper.
+- **Permissions, not role checks.** A code-defined `PERMISSIONS_BY_ROLE` matrix is the single source of authorization truth, enforced by a `@RequirePermission` guard that fails closed if a route declares no permission. The matrix lives in code so it is reviewable in diffs and cannot be widened by a privileged SQL statement.
+- **Segregation of duties is structural.** `admin_funding.request` is held by the compliance officer and support agent; `admin_funding.approve` by the super-admin alone, which is deliberately **denied** the request half. No role holds both, and a unit test asserts that as an invariant over the whole matrix, so widening a role until it can self-approve fails the build. A runtime `checkerId != makerId` check and a database CHECK constraint are the second and third lines of defence.
+- **Four-eyes, proven on real money.** Admin funding is filed by a maker and moves nothing; a differently-roled checker approves it, and the credit posts **inside the same transaction that transitions the request out of `pending`**, under a row lock. A concurrent double-approval cannot post twice, a failed posting leaves the request pending rather than approved-but-unexecuted, and a retry carrying the original `Idempotency-Key` replays the first result. Requests expire after 24 hours. Breadth (suspension, reversal, card freeze) is deferred to Phase 2/3 with the actions it would govern.
+- **Every admin action is audited** with `actor_type = 'admin'` on the append-only, hash-chained trail (ADR-0024): session issue and revocation, MFA enrolment, operator creation and status change, and the funding request, approval, and execution. Bootstrap seeding is recorded as a `system` actor.
+- **Read-only views** cover the customer directory and detail, any wallet's transaction history, a ledger account beside its recomputed reconciliation state, and the audit trail read and verification that Slice 6 deferred (behind `audit.read` — auditor or higher; the support agent does not hold it).
+- Not yet implemented: password rotation and self-service password change, TOTP reset, and the "assist / view-as-customer" mode (deferred to Phase 2). TOTP secrets are stored unencrypted at rest — see §6.2 and the known gaps in `docs/phase-1-handoff.md`.
 
 ## 4. KYC / AML and screening (simulated)
 
@@ -95,6 +109,8 @@ The onboarding pipeline is modelled end-to-end behind mock adapters, so real pro
 - Encryption at rest for databases, object storage, and backups.
 - **Field-level encryption / tokenization** for sensitive PII (identity documents, personal identifiers), separating access to sensitive fields from general application data.
 - **Envelope encryption** via a KMS abstraction; keys are managed and rotated, never embedded in code or images.
+
+Known gap (Phase 1, Slice 7, ADR-0025): **admin TOTP secrets are stored unencrypted.** Every other secret in the system is stored only as a hash, but TOTP verification needs the secret itself, so it cannot be. This is an accepted interim gap until the field-level/KMS encryption above exists; the blast radius is bounded to the second factor of a handful of back-office accounts whose first factor is separately scrypt-hashed. It is the first candidate for field-level encryption when that lands.
 
 ### 6.3 Secrets
 
@@ -164,6 +180,7 @@ Fides is not a licensed institution; this mapping documents how the design align
 
 | Version | Date | Change |
 |---|---|---|
+| 0.6.0 | 2026-07-28 | Phase 1 Slice 7: back-office controls implemented (ADR-0025). Separate admin identity isolated from customer authentication at every layer; mandatory two-factor sign-in (scrypt password + RFC 6238 TOTP, no session on one factor, replay-proof codes); 30-minute sliding idle / 8-hour absolute admin sessions with immediate revocation and disablement; a code-defined role→permission matrix behind `@RequirePermission`, with segregation of duties enforced structurally (no role holds both halves of the funding pair) and backed by runtime and database checks; four-eyes proven end to end on admin funding, executed atomically with the approval; every admin action recorded on the tamper-evident trail with `actor_type = 'admin'`; the audit read/verify surface exposed behind `audit.read`. The self-service dev funding faucet is retired (§3.1). New known gap: TOTP secrets are stored unencrypted (§6.2). |
 | 0.5.0 | 2026-07-13 | Phase 1 Slice 6: append-only, hash-chained audit trail (ADR-0024). Sensitive actions (P2P transfer, dev funding, SCA step-up, session revocation and refresh-reuse revocation, account provisioning) are recorded to an immutable, tamper-evident `audit_log` inside each action's own transaction; one global hash chain verified by `verifyAuditChain`, with the ledger's append-only triggers rejecting UPDATE/DELETE. Records hold internal references only (no raw PII). Dead-session retention tightened from a 90-day forensic grace to prompt purge now that the forensic record lives in the trail; the SCA-grant→session FK set to `ON DELETE CASCADE`. |
 | 0.4.0 | 2026-07-12 | Phase 1 Slice 5: PSD2 dynamic linking enforced on the internal P2P transfer (server-side action-hash recomputation, single-use grant consumed atomically in the posting transaction); object-level authorization on the wallet transaction-history read; dev funding faucet documented as a kill-switched, self-scoped interim control until admin RBAC (ADR-0023). |
 | 0.3.0 | 2026-07-12 | Phase 1 Slice 4: object-level authorization enforced on the `/v1/accounts` customer resource (session guard + server-side ownership assertion); account provisioning is event-driven and idempotent (ADR-0022). |

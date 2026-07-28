@@ -11,10 +11,13 @@ import { configureApp } from '../../app.setup';
 import { loadEnv } from '../../config/env';
 import { OutboxDispatcher } from '../../shared/outbox/outbox.dispatcher';
 import { NOTIFICATIONS } from '../../shared/tokens';
+import { seedAdmin } from '../../../test/admin';
+import { WalletResolver } from '../accounts/application/wallet-resolver';
 import { AuditAction } from '../audit/application/audit-actions';
 import { AuditService } from '../audit/application/audit.service';
 import { auditLog } from '../audit/infra/audit.schema';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
+import { FundingService } from './application/funding.service';
 
 const ORIGIN = 'http://localhost:3001';
 const RP_ID = 'localhost';
@@ -42,7 +45,6 @@ beforeAll(async () => {
   process.env.DATABASE_URL = inject('databaseUrl');
   process.env.SCHEDULERS_ENABLED = 'false';
   process.env.THROTTLE_ENABLED = 'false';
-  process.env.DEV_FUNDING_ENABLED = 'true';
 
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(NOTIFICATIONS)
@@ -61,9 +63,19 @@ afterAll(async () => {
   await closeDb();
 });
 
+const SEED_ADMIN_ID = '00000000-0000-7000-8000-00000000ad11';
+
 beforeEach(async () => {
   await resetDb(db as TestDatabase);
   notifications.sent.length = 0;
+  // Wallets are seeded through the real admin funding path, so the operator it
+  // is attributed to has to exist. The four-eyes workflow around that path is
+  // proven in the admin HTTP suite; here it is only test scaffolding.
+  await seedAdmin(db as TestDatabase, {
+    id: SEED_ADMIN_ID,
+    email: 'ops@fides.example',
+    role: 'super_admin',
+  });
 });
 
 interface EnrolledUser {
@@ -131,12 +143,20 @@ function transferAction(recipient: string, minor: string): ScaActionDto {
   return buildTransferScaAction({ recipient, amount: minor, currency: EUR });
 }
 
-function fund(user: EnrolledUser, minor: string, key = 'seed-funding') {
-  return request(server)
-    .post('/v1/dev/funding')
-    .set('Authorization', `Bearer ${user.accessToken}`)
-    .set('Idempotency-Key', key)
-    .send({ amount: { amount: minor, currency: EUR } });
+/**
+ * Seed a wallet through the real funding path. Slice 7 retired the self-service
+ * faucet this used to call, so the credit is now an admin operation; driving the
+ * service directly keeps these transfer tests focused on transfers rather than
+ * on staffing two admins and running a four-eyes approval for every fixture.
+ */
+async function fund(user: EnrolledUser, minor: string, key = 'seed-funding'): Promise<void> {
+  const wallet = await app.get(WalletResolver).resolvePrimaryWallet(user.userId);
+  await app.get(FundingService).fund({
+    actor: { type: 'admin', adminId: SEED_ADMIN_ID },
+    targetWalletId: wallet.walletId,
+    amount: { amount: minor, currency: EUR },
+    idempotencyKey: key,
+  });
 }
 
 function postTransfer(
@@ -178,7 +198,7 @@ async function setupFundedPair(
   const alice = await enrol('alice@example.com');
   const bob = await enrol('bob@example.com');
   await dispatcher.dispatchPending();
-  await fund(alice, fundMinor).expect(201);
+  await fund(alice, fundMinor);
   return { alice, bob };
 }
 
@@ -272,17 +292,22 @@ describe('payments HTTP surface (integration)', () => {
     expect(missing.body.code).toBe('VALIDATION_FAILED');
   });
 
-  it('caps dev funding and requires authentication', async () => {
+  it('no longer exposes the retired dev funding faucet', async () => {
     const { alice } = await setupFundedPair('10000');
 
-    const overCap = await fund(alice, '2000000', 'over-cap').expect(400);
-    expect(overCap.body.code).toBe('VALIDATION_FAILED');
-
+    // ADR-0025 retired POST /v1/dev/funding: a customer can no longer credit
+    // their own wallet by any route, authenticated or not.
     await request(server)
       .post('/v1/dev/funding')
-      .set('Idempotency-Key', 'x')
+      .set('Authorization', `Bearer ${alice.accessToken}`)
+      .set('Idempotency-Key', 'gone')
       .send({ amount: { amount: '1000', currency: EUR } })
-      .expect(401);
+      .expect(404);
+    await request(server)
+      .post('/v1/dev/funding')
+      .set('Idempotency-Key', 'gone')
+      .send({ amount: { amount: '1000', currency: EUR } })
+      .expect(404);
   });
 
   it('serves wallet transaction history, paginated and ownership-scoped', async () => {
@@ -374,11 +399,8 @@ describe('payments HTTP surface (integration)', () => {
     const docs = await request(server).get('/docs-json').expect(200);
     const paths = Object.keys(docs.body.paths as Record<string, unknown>);
     expect(paths).toEqual(
-      expect.arrayContaining([
-        '/v1/transfers',
-        '/v1/dev/funding',
-        '/v1/wallets/{walletId}/transactions',
-      ]),
+      expect.arrayContaining(['/v1/transfers', '/v1/wallets/{walletId}/transactions']),
     );
+    expect(paths).not.toContain('/v1/dev/funding');
   });
 });
