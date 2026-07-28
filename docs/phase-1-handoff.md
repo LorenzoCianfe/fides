@@ -3,11 +3,11 @@
 | Field | Value |
 |---|---|
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) |
-| Branch | `phase-1-walking-skeleton` — not yet PR'd (single PR at phase end) |
+| Branch | `phase-1-walking-skeleton` — **merged to `main` at the end of Slice 7** (see §6); Slice 8 continues on a fresh branch |
 | Verified | `apps/api` 219/219 tests green; lint, typecheck, and production build clean |
 | Last updated | 2026-07-28 |
 
-> Resume point: **Slice 8 (clients: web + mobile)**. Slice 7 (admin RBAC, MFA, and four-eyes, ADR-0025) is **done**, which completes the whole Phase 1 backend — Slice 8 is the last slice before the single PR. Read §4 (locked decisions) before writing code — the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) holds for all new surface. Slice 7 added the `admin` module: a separate `admins` identity with password + TOTP, a shorter sliding-idle session, a code-defined permission matrix behind `@RequirePermission`, the read-only views (customers, wallet history, ledger reconciliation, and the audit read/verify surface Slice 6 deferred), and maker-checker proven end to end on admin funding — which retired the dev faucet. Auth policy is pinned in ADR-0020/0021; the account model in ADR-0022; transfer/funding/history in ADR-0023; the audit trail in ADR-0024; the back office in ADR-0025.
+> Resume point: **Slice 8 (clients: web + mobile)**. Slice 7 (admin RBAC, MFA, and four-eyes, ADR-0025) is **done**, which completes the whole Phase 1 backend — Slice 8 is the last slice of Phase 1 and starts from `main`, which now carries the whole backend. Read §4 (locked decisions) before writing code — the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) holds for all new surface. Slice 7 added the `admin` module: a separate `admins` identity with password + TOTP, a shorter sliding-idle session, a code-defined permission matrix behind `@RequirePermission`, the read-only views (customers, wallet history, ledger reconciliation, and the audit read/verify surface Slice 6 deferred), and maker-checker proven end to end on admin funding — which retired the dev faucet. Auth policy is pinned in ADR-0020/0021; the account model in ADR-0022; transfer/funding/history in ADR-0023; the audit trail in ADR-0024; the back office in ADR-0025.
 
 ---
 
@@ -122,7 +122,7 @@ Phase 1 is built **backend-first** ("API + tests first, clients after"); with Sl
 | Test topology | Everything under `pnpm test` (Testcontainers); HTTP suites boot the real `AppModule` | Done |
 | Clients | API + tests first; clients (Slice 8) last | Sequencing |
 
-Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` balances; explicit currency on monetary rows; Postgres idempotency table; non-negative wallets (system accounts may go negative); `/v1` prefix + correlation ids (done); no passwords; multiple passkeys, recovery deferred; feature branch + conventional commits + one PR at phase end; ADR per new decision; Testcontainers + `fast-check`; hash-chained audit done (ADR-0024); one Playwright happy-path in Slice 8.
+Adopted technical defaults: UUID v7 ids; `BIGINT` minor units / `NUMERIC(38,0)` balances; explicit currency on monetary rows; Postgres idempotency table; non-negative wallets (system accounts may go negative); `/v1` prefix + correlation ids (done); no passwords **for customers** (the back office uses password + TOTP, ADR-0025); multiple passkeys, recovery deferred; feature branch + conventional commits + a PR to `main` per slice group; ADR per new decision; Testcontainers + `fast-check`; hash-chained audit done (ADR-0024); one Playwright happy-path in Slice 8.
 
 ## 5. Next steps
 
@@ -152,7 +152,7 @@ One further correction worth remembering: `approve` deliberately performs **no p
 ### Slice 8 — Clients — NEXT (per `roadmap.md`)
 - **8 Clients:** web + mobile with full passkeys; add the httpOnly-cookie transport mode for web (ADR-0021) plus security headers (helmet/HSTS); Playwright happy-path; i18n scaffolding.
 - The admin back office also now has a real API to build against (`apps/admin` is still a Next.js shell). Scope for it is a judgement call: the Phase 1 exit criteria do not require an admin client, and `roadmap.md` lists admin UI work under Phase 2.
-- Phase 1 ends with a **single PR** from `phase-1-walking-skeleton` to `main`.
+- **Branching changed at the end of Slice 7.** The original plan was one PR at Phase 1 completion; the backend is complete and green, so it was merged to `main` then instead of carrying sixteen commits through the whole client slice. Slice 8 starts from `main` on its own branch and gets its own PR — the per-slice conventional-commit cadence is unchanged.
 
 ## 6. Environment & workflow notes
 
@@ -166,7 +166,7 @@ One further correction worth remembering: `approve` deliberately performs **no p
 - **`test/db.ts` `resetDb` must list every table.** Adding a table without adding it to the TRUNCATE list leaves state bleeding between tests. Slice 7 added `pending_admin_actions`, `admin_login_challenges`, `admin_sessions`, `admins`.
 - **Admin test helpers** live in `test/admin.ts`: `seedAdmin` (inserts directly with cheap scrypt parameters — the production defaults cost ~100 ms a hash) and `signInAdmin` (drives the real two-step HTTP login, enrolling TOTP when needed). Note the TOTP replay guard: signing the *same* admin in twice inside one 30-second step needs an advanced `atMs`.
 - **Repo is PUBLIC** (`LorenzoCianfe/fides`); Dependabot tuned on `main`; framework majors deferred to Phase 7.
-- **Commit cadence:** per-slice conventional commits on `phase-1-walking-skeleton`; one PR at Phase 1 completion.
+- **Commit cadence:** per-slice conventional commits on a feature branch, then a PR to `main`. CI and CodeQL only run on `main` pushes and PRs **targeting** `main`, so work must reach `main` through a PR to be gated before it lands. The Slice 1–7 backend landed this way at the end of Slice 7; Slice 8 branches from `main`.
 
 ## 7. How to verify
 
