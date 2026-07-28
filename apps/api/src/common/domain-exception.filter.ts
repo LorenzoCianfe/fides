@@ -10,6 +10,7 @@ import {
   DomainError,
   ErrorCategory,
   InternalError,
+  RateLimitError,
   ValidationError,
   isDomainError,
 } from '@fides/domain';
@@ -68,8 +69,19 @@ export class DomainExceptionFilter implements ExceptionFilter {
       return new ValidationError('Validation failed', { issues: exception.issues });
     }
     if (exception instanceof HttpException) {
+      const zodError = extractZodError(exception);
+      if (zodError) {
+        return new ValidationError('Validation failed', { issues: zodError.issues });
+      }
+      if (exception.getStatus() === 429) return new RateLimitError();
       return new GenericHttpError(exception.getStatus(), exception.message);
     }
     return new InternalError('Unexpected error');
   }
+}
+
+/** Unwrap the ZodError carried by nestjs-zod's validation exception, if any. */
+function extractZodError(exception: HttpException): ZodError | undefined {
+  const candidate = (exception as { getZodError?: () => unknown }).getZodError?.();
+  return candidate instanceof ZodError ? candidate : undefined;
 }

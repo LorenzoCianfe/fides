@@ -22,3 +22,10 @@ Each ADR captures one significant decision, its context, and its consequences. A
 | [0016](0016-design-language-tokens.md) | Minimal, trustworthy design language; shared tokens | Accepted |
 | [0017](0017-orm-drizzle.md) | ORM selection: Drizzle | Accepted |
 | [0018](0018-money-representation-rounding.md) | Money representation and rounding policy | Accepted |
+| [0019](0019-synchronous-balance-projection.md) | Synchronous in-transaction balance projection (refines 0005) | Accepted |
+| [0020](0020-session-tokens-webauthn-policy.md) | Opaque server-side session tokens and WebAuthn ceremony policy (refines 0007) | Accepted |
+| [0021](0021-http-auth-surface-policy.md) | HTTP auth surface: token transport, SCA dynamic linking, throttling, retention (refines 0007, 0020) | Accepted |
+| [0022](0022-account-provisioning-model.md) | Account provisioning and the account/wallet/ledger-account model (refines 0005, 0019) | Accepted |
+| [0023](0023-p2p-transfer-sca-enforcement-dev-funding.md) | Internal P2P transfer: SCA enforcement, dev funding, and the transaction-history read (refines 0019, 0021, 0022) | Accepted |
+| [0024](0024-append-only-hash-chained-audit-trail.md) | Append-only, hash-chained audit trail (refines 0005, 0019, 0021) | Accepted |
+| [0025](0025-admin-rbac-mfa-four-eyes.md) | Admin identity, RBAC, MFA, and four-eyes on admin funding (refines 0011) | Accepted |

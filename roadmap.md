@@ -72,7 +72,7 @@ Principles:
 
 **Scope.**
 - SEPA Credit Transfer (inbound/outbound) and SEPA Instant via the mock `PaymentRailPort`.
-- IBAN assignment; payee management.
+- IBAN assignment; payee management, including public payment handles (`@tag`) for P2P recipients (email is the Phase 1 identifier; ADR-0023).
 - Virtual debit card issuance via the mock `CardIssuerPort`; authorization/settlement simulation against the ledger.
 - Card controls: limits, freeze/unfreeze, category and channel toggles; 3DS/SCA on sensitive card actions.
 - Admin: user/account administration and card operations.

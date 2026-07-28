@@ -1,14 +1,10 @@
 import 'reflect-metadata';
 import { describe, expect, it } from 'vitest';
-import type { Env } from '../config/env';
+import { loadEnv } from '../config/env';
 import { HealthService } from './health.service';
 
-const env: Env = {
-  NODE_ENV: 'test',
-  API_PORT: 3000,
-  APP_NAME: 'Fides',
-  LOG_LEVEL: 'error',
-};
+// Parse through the schema so new env fields with defaults never break this test.
+const env = loadEnv({ NODE_ENV: 'test', LOG_LEVEL: 'error' });
 
 describe('HealthService', () => {
   it('reports ok with a lowercased service name', () => {

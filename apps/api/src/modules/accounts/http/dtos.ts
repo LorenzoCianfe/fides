@@ -1,0 +1,16 @@
+import {
+  AccountIdParamsSchema,
+  PaginationQuerySchema,
+  WalletIdParamsSchema,
+} from '@fides/contracts';
+import { createZodDto } from 'nestjs-zod';
+
+/**
+ * Request DTO classes binding the shared Zod contracts to the ZodValidationPipe.
+ * Contracts stay framework-free; only this file knows Nest.
+ */
+export class AccountIdParamsDto extends createZodDto(AccountIdParamsSchema) {}
+
+export class WalletIdParamsDto extends createZodDto(WalletIdParamsSchema) {}
+
+export class PaginationQueryDto extends createZodDto(PaginationQuerySchema) {}

@@ -222,3 +222,44 @@ export class MoneyPrecisionError extends DomainError {
     });
   }
 }
+
+// --- Ledger errors ----------------------------------------------------------
+
+/** A journal entry violates a structural rule (too few postings, non-positive amount). */
+export class InvalidJournalEntryError extends DomainError {
+  constructor(message = 'Invalid journal entry', details?: ErrorContext) {
+    super({
+      code: ErrorCode.LEDGER_INVALID_ENTRY,
+      category: ErrorCategory.Validation,
+      httpStatus: 422,
+      message,
+      details,
+    });
+  }
+}
+
+/** A journal entry's postings do not sum to zero for one or more currencies. */
+export class UnbalancedEntryError extends DomainError {
+  constructor(details?: ErrorContext) {
+    super({
+      code: ErrorCode.LEDGER_UNBALANCED,
+      category: ErrorCategory.Validation,
+      httpStatus: 422,
+      message: 'Journal entry does not balance: debits must equal credits per currency',
+      details,
+    });
+  }
+}
+
+/** A debit would drive a wallet balance negative (no overdraft in the simulated core). */
+export class InsufficientFundsError extends DomainError {
+  constructor(details?: ErrorContext) {
+    super({
+      code: ErrorCode.INSUFFICIENT_FUNDS,
+      category: ErrorCategory.PreconditionFailed,
+      httpStatus: 422,
+      message: 'Insufficient funds for this operation',
+      details,
+    });
+  }
+}

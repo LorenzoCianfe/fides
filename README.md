@@ -77,4 +77,4 @@ infra/      docker compose and local infrastructure
 
 ## Status
 
-Phase 0 (Foundations) — in progress. See [roadmap.md](roadmap.md) for the phase plan.
+Phase 1 (Walking skeleton) — in progress. The double-entry ledger, identity (passkeys, server-side sessions, SCA step-up seam), and the `/v1/auth` HTTP surface are built and tested; accounts, the P2P transfer, admin, and the clients follow. See [roadmap.md](roadmap.md) for the phase plan and [docs/phase-1-handoff.md](docs/phase-1-handoff.md) for the current build state.

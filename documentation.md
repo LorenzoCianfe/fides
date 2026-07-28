@@ -5,16 +5,16 @@
 | Field | Value |
 |---|---|
 | Document | Master platform documentation |
-| Version | 0.2.0 |
-| Status | Phase 0 (Foundations) — in progress |
+| Version | 0.10.0 |
+| Status | Phase 1 (Walking skeleton) — backend complete, clients remaining |
 | Scope | Simulated-core EU neobank (iOS, Android, web) + admin back office |
-| Last updated | 2026-07-04 |
+| Last updated | 2026-07-28 |
 
 ---
 
 ## 1. Purpose
 
-This document is the primary, evolving record of the platform. It tracks architecture decisions, implemented features, technical rationale, and the system's evolution across versions. It is maintained as code (in-repository, updated per change) and is authoritative for how the system is structured. Companion documents: [roadmap.md](roadmap.md), [design.md](design.md), [security.md](security.md).
+This document is the primary, evolving record of the platform. It tracks architecture decisions, implemented features, technical rationale, and the system's evolution across versions. It is maintained as code (in-repository, updated per change) and is authoritative for how the system is structured. Companion documents: [roadmap.md](roadmap.md), [design.md](design.md), [security.md](security.md). Phase 1 build progress and the session-to-session continuation state are tracked in [docs/phase-1-handoff.md](docs/phase-1-handoff.md).
 
 ## 2. Product overview
 
@@ -202,6 +202,13 @@ ADRs are maintained under `docs/adr/` (see the [index](docs/adr/README.md)). The
 | 0016 | Minimal, trustworthy design language; shared tokens | Accepted |
 | 0017 | ORM selection: Drizzle | Accepted |
 | 0018 | Money representation and rounding policy | Accepted |
+| 0019 | Synchronous in-transaction balance projection (refines 0005) | Accepted |
+| 0020 | Opaque server-side session tokens and WebAuthn ceremony policy (refines 0007) | Accepted |
+| 0021 | HTTP auth surface: token transport, SCA dynamic linking, throttling, retention (refines 0007, 0020) | Accepted |
+| 0022 | Account provisioning and the account/wallet/ledger-account model (refines 0005, 0019) | Accepted |
+| 0023 | Internal P2P transfer: SCA enforcement, dev funding, and the transaction-history read (refines 0019, 0021, 0022) | Accepted |
+| 0024 | Append-only, hash-chained audit trail (refines 0005, 0019, 0021) | Accepted |
+| 0025 | Admin identity, RBAC, MFA, and four-eyes on admin funding (refines 0011) | Accepted |
 
 ## 9. Versioning and change log
 
@@ -211,6 +218,14 @@ The platform follows semantic versioning. This document's version tracks documen
 |---|---|---|
 | 0.1.0 | 2026-07-04 | Initial documentation from discovery; scope, architecture, stack, and ADR index established. |
 | 0.2.0 | 2026-07-04 | Phase 0 foundations implemented. ADR-0017 resolved (Drizzle); ADR-0018 added (money/rounding). Stack finalized: Vitest, Zod-first OpenAPI. ADRs 0001–0018 written; CHANGELOG initiated. |
+| 0.3.0 | 2026-07-05 | Phase 1 ledger persistence: double-entry schema, append-only triggers, transactional posting service with idempotency and outbox, and a synchronously-maintained balance projection. ADR-0019 added (balance projection strategy). |
+| 0.4.0 | 2026-07-05 | Phase 1 progress: async transaction-history projection via the outbox dispatcher (Slice 2 complete); identity onboarding foundation (Slice 3 Wave A) — registration, email verification, and a mock KYC pipeline. Continuation state captured in [docs/phase-1-handoff.md](docs/phase-1-handoff.md). |
+| 0.5.0 | 2026-07-06 | Phase 1 Slice 3 Wave B: WebAuthn relying party (passkey registration and email-first authentication, UV required, anti-enumeration decoys) and server-side sessions (opaque hashed tokens, rotation with reuse detection, immediate revocation), enrolment-token-gated first passkey, auth guard and ownership helper. ADR-0020 added. |
+| 0.6.0 | 2026-07-06 | Phase 1 Slice 3 Wave C: the `/v1/auth` HTTP surface (registration, email-keyed verification and resend, WebAuthn ceremonies, session refresh/logout/list/revoke) with Zod contracts and generated OpenAPI; SCA step-up seam with PSD2 dynamic linking (action-hashed challenges, single-use grants); auth rate limiting; correlation-id middleware, CORS, and `/v1` versioning; scheduled outbox dispatch and retention sweeper. ADR-0021 added. Slice 3 complete. |
+| 0.7.0 | 2026-07-12 | Phase 1 Slice 4: accounts & wallets. Event-driven, idempotent account provisioning consumes `kyc.approved` inside the outbox dispatcher's transaction, creating one EUR account + a single wallet + a backing ledger account (`wallet:<walletId>`, liability). Account read surface (`GET /v1/accounts`, `GET /v1/accounts/{accountId}`) with live balances read from the authoritative ledger projection (ADR-0019), session-guarded and ownership-scoped. ADR-0022 added. |
+| 0.8.0 | 2026-07-12 | Phase 1 Slice 5: internal instant P2P transfer + dev funding. `POST /v1/transfers` — idempotent, SCA-gated transfer with PSD2 dynamic linking enforced inside the posting transaction (action hash recomputed from the executed amount/payee; single-use grant consumed via a new `onClaimed` hook so it fires exactly once and replays skip it). Kill-switched dev funding faucet (`POST /v1/dev/funding`) and a keyset-paginated, ownership-scoped wallet transaction history (`GET /v1/wallets/{walletId}/transactions`). Proves the Phase 1 exit criteria end to end (115 tests). ADR-0023 added. |
+| 0.9.0 | 2026-07-13 | Phase 1 Slice 6: append-only, hash-chained audit trail. A new `audit` module records sensitive actions (P2P transfer, dev funding, SCA step-up, session revocation and refresh-reuse revocation, account provisioning) to an immutable `audit_log` (migration `0008`) inside each action's own transaction — a money move via a new symmetric `onPosted` hook on the posting path. One global hash chain (`sha256(prev_hash + canonical(record))`, gap-free `seq`, advisory-lock append) whose integrity a pure `verifyAuditChain` confirms; the ledger's append-only triggers reject UPDATE/DELETE, so tampering breaks the chain. Records hold internal references only (no raw PII). Dead-session retention tightened to prompt purge now that the forensic record lives in the trail; the SCA-grant→session FK became `ON DELETE CASCADE` (migration `0009`). ADR-0024 added. 129 tests. |
+| 0.10.0 | 2026-07-28 | Phase 1 Slice 7: admin RBAC, MFA, and four-eyes. A new `admin` module (migration `0010`) gives the back office a separate `admins` identity — its own guard, principal, session table, and token prefix, sharing no table or code path with customer authentication. Two-step login: a password yields only a single-use challenge, and the session is issued solely after an RFC 6238 TOTP code verifies (scrypt passwords, an in-house TOTP tested against the RFC vectors, a strictly-increasing accepted step so codes cannot be replayed). Sessions are one opaque token with a 30-minute sliding idle window and an 8-hour absolute cap. Authorization runs through a code-defined role→permission matrix behind `@RequirePermission`, with segregation of duties made structural: `super_admin` is deliberately denied the funding *request* permission, so no role holds both halves, and a test asserts it. Four-eyes is proven end to end on admin funding — the credit posts inside the same transaction that decides the request. Read-only views cover customers, wallet history, ledger reconciliation, and the audit read/verify surface deferred from Slice 6. The Slice 5 dev funding faucet is retired. ADR-0025 added. 219 tests. |
 
 ## 10. Glossary
 
