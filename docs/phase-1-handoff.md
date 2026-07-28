@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) |
-| Branch | `phase-1-walking-skeleton` — **merged to `main` at the end of Slice 7** (see §6); Slice 8 continues on a fresh branch |
+| Branch | Slices 1–7 **merged to `main`** via [PR #21](https://github.com/LorenzoCianfe/fides/pull/21) at the end of Slice 7 (see §6); Slice 8 branches from `main` |
 | Verified | `apps/api` 219/219 tests green; lint, typecheck, and production build clean |
 | Last updated | 2026-07-28 |
 
@@ -150,6 +150,7 @@ Three decisions were taken during the build that §5 did not settle:
 One further correction worth remembering: `approve` deliberately performs **no pre-flight status check**. An earlier version did, and it rejected a checker's retry carrying the original `Idempotency-Key` with a 400 — exactly the case idempotency exists for. The authoritative checks run once, under `FOR UPDATE`, inside the posting transaction, which an idempotent replay never enters.
 
 ### Slice 8 — Clients — NEXT (per `roadmap.md`)
+- **First: green the dependency audit** (see §8). It is failing on `main` from three weeks of advisory drift on `next`, `sharp`, `brace-expansion`, and `js-yaml` — all minor/patch bumps within the pinned majors, all in the very packages this slice is about to build on.
 - **8 Clients:** web + mobile with full passkeys; add the httpOnly-cookie transport mode for web (ADR-0021) plus security headers (helmet/HSTS); Playwright happy-path; i18n scaffolding.
 - The admin back office also now has a real API to build against (`apps/admin` is still a Next.js shell). Scope for it is a judgement call: the Phase 1 exit criteria do not require an admin client, and `roadmap.md` lists admin UI work under Phase 2.
 - **Branching changed at the end of Slice 7.** The original plan was one PR at Phase 1 completion; the backend is complete and green, so it was merged to `main` then instead of carrying sixteen commits through the whole client slice. Slice 8 starts from `main` on its own branch and gets its own PR — the per-slice conventional-commit cadence is unchanged.
@@ -192,6 +193,7 @@ Manual smoke: `pnpm stack:up`, set `.env`, run `corepack pnpm --filter @fides/ap
 - **No admin password rotation, self-service password change, or TOTP reset.** An operator who loses their authenticator needs direct database intervention. Acceptable at this size; the first gap to close if the back office grows. A `super_admin` can disable and re-create an account as a workaround.
 - **Admin login is throttled but not lockout-protected.** The five-minute login challenge accepts repeated TOTP attempts (a wrong code rolls back so a typo does not cost the password step), bounded only by the route throttle. At 10 attempts/minute against a six-digit code with a ±1-step window the odds are negligible, but per-account lockout and failed-attempt alerting are Phase 2 hardening.
 - **Denied admin actions are not audited**, consistent with ADR-0024: a denial rolls its transaction back, so it cannot be captured atomically. A rejected *approval* is recorded (it is a committed decision); a failed sign-in is not.
+- **CI's dependency audit is failing on `main` (as of 2026-07-28), and it is not caused by any Phase 1 code.** `pnpm audit --prod --audit-level=high` reports 34 advisories (15 high) against packages that have been in the tree since Phase 0 — `next` (DoS and SSRF in App Router / Server Actions, patched in 15.5.21), `sharp` via Expo (inherited libvips issues, patched in 0.35.0), and the ubiquitous transitives `brace-expansion` and `js-yaml`. None are reachable from `apps/api`; they belong to the web, admin, and mobile shells. `main` had not run CI since 2026-07-05, so three weeks of newly-published advisories surfaced all at once on the Slice 7 PR. These are **minor/patch bumps within the pinned majors**, so fixing them does not touch the "framework majors deferred to Phase 7" decision. Do this first in Slice 8, before the client work adds more surface — it is also the slice that actually exercises those packages.
 - The bootstrap admin is created at application boot from `ADMIN_BOOTSTRAP_*`. Because the HTTP test suites truncate between tests, they re-seed operators themselves — a boot-time seed is not a fixture to rely on.
 - **The transfer route exposes a throttled recipient-existence oracle** (an unknown recipient email is a 404), accepted as consistent with the registration-409 posture and mitigated by mandatory SCA + throttling; superseded when public payment handles (`@tag`) replace email as the P2P identifier (roadmap Phase 2). ADR-0023.
 - Redis is still unused (sessions/challenges/idempotency are Postgres-backed; any Redis fast-path must preserve immediate revocation, ADR-0020).
