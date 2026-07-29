@@ -99,6 +99,13 @@ export const sessions = pgTable(
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     revokedReason: text('revoked_reason'),
+    /**
+     * SHA-256 of the double-submit CSRF token, set only when the session is
+     * carried by cookies (ADR-0027). NULL for bearer sessions: a bearer token
+     * is not an ambient credential, so those requests have no CSRF exposure.
+     * Rotated with the token pair, and revoked with the session by construction.
+     */
+    csrfTokenHash: text('csrf_token_hash'),
   },
   (table) => ({
     accessHashUniq: uniqueIndex('sessions_access_token_hash_uniq').on(table.accessTokenHash),

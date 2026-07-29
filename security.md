@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Document | Security architecture and controls |
-| Version | 0.6.1 |
+| Version | 0.7.0 |
 | Status | Living — Phase 1 controls landing |
 | Regulatory frame | EU/EEA: PSD2/SCA, GDPR (simulated, unlicensed) |
 | Last updated | 2026-07-29 |
@@ -48,6 +48,15 @@ Note on status: Fides is a simulated core and not a licensed institution. Real c
 - Idle and absolute session timeouts; re-authentication on sensitive actions.
 - Anomalous-session signals (new device, geo velocity) feed the risk engine.
 - Implemented (Phase 1, ADR-0020/0021): opaque hashed tokens validated against the session row on every request, rotation with reuse detection, per-device session listing and revocation over `/v1/auth`, per-IP rate limiting on the auth endpoints, and a retention sweeper. Since Slice 6 (ADR-0024) dead sessions are purged **promptly** — the forensic record of any revocation or refresh-reuse revocation now lives in the tamper-evident audit trail — rather than kept for the earlier 90-day grace.
+
+#### Token transport and CSRF (Slice 8, ADR-0027)
+
+Transport is negotiated **per request by the client**, not per deployment: a client sends `X-Fides-Token-Transport: cookie` on the three routes that mint or rotate a session, and everything else stays on the ADR-0021 bearer contract. Web and mobile therefore share one API and one contract with no user-agent sniffing.
+
+- **Cookie mode withholds the tokens from the response body.** The pair is set `httpOnly` and `SameSite=Strict`; echoing the tokens in the body as well would return them to script and defeat the mode. The access cookie is scoped to `/v1`; the refresh cookie is scoped to `/v1/auth/refresh`, so the longest-lived credential is absent from ordinary API traffic. This closes the ADR-0021 gap in which a browser held a refresh token in script-reachable storage.
+- **CSRF is a double-submit token bound to the session row.** A random `fcs_` token is stored as a SHA-256 hash on the session and returned in a deliberately readable cookie; the client echoes it in `X-CSRF-Token` and the guard compares hashes in constant time. Bearer callers are exempt — an explicitly-set header is not an ambient credential. A session issued in bearer mode holds no hash and therefore cannot be driven from a cookie at all: the check **fails closed**.
+- **Refresh is checked inside its rotation transaction**, not by the guard, because it deliberately runs on an expired access token and cannot sit behind `SessionAuthGuard`. The check is ordered after reuse detection and before any rotation, so a stolen token still trips the alarm while a cross-site caller cannot churn a victim's token pair.
+- **`SameSite=Strict` requires the web client and the API to be same-site** (different ports or subdomains are fine; different registrable domains are not). A cross-site deployment must use `SameSite=None`, where the CSRF token becomes the sole defence — which is why it is not optional. Configuration rejects `None` without `Secure`, a pair browsers silently drop.
 
 ## 3. Authorization
 
@@ -103,6 +112,7 @@ The onboarding pipeline is modelled end-to-end behind mock adapters, so real pro
 ### 6.1 In transit
 
 - TLS for all client-server and server-service communication; modern cipher suites; HSTS on web.
+- Implemented (Slice 8, ADR-0027): security headers via helmet on every response. **HSTS** at two years with `includeSubDomains` and `preload`, emitted unconditionally — browsers ignore it over plain HTTP, so it costs nothing locally and is correct the moment TLS terminates in front of the API. The JSON surface carries the tightest possible content policy (`default-src 'none'`, `frame-ancestors 'none'`, `base-uri 'none'`) because it needs to load nothing; the relaxation Swagger UI requires is scoped to `/docs` alone rather than applied to the money-moving surface. `Cross-Origin-Resource-Policy` is `cross-origin` because CORS, not CORP, is the control that governs a cross-origin JSON API. CORS is credentialed against the existing origin allowlist, with an explicit request-header allowlist.
 
 ### 6.2 At rest
 
@@ -193,6 +203,7 @@ Fides is not a licensed institution; this mapping documents how the design align
 
 | Version | Date | Change |
 |---|---|---|
+| 0.7.0 | 2026-07-29 | Phase 1 Slice 8 Wave A: client token transport and web hardening (ADR-0027). Closes two standing gaps. An **opt-in, per-request httpOnly-cookie transport** (§2.3) removes the ADR-0021 XSS exposure of a browser-held refresh token: the token pair is withheld from the response body, `SameSite=Strict`, with the refresh cookie scoped to the single route that spends it, defended by a double-submit CSRF token hashed onto the session row and enforced inside the refresh rotation transaction as well as by the guard. Bearer callers are exempt and unchanged; a bearer-issued session cannot be driven from a cookie (fails closed). **Security headers** (§6.1) via helmet: two-year HSTS with preload, a `default-src 'none'` policy on the JSON surface with the Swagger relaxation confined to `/docs`, and credentialed CORS. Adds the native passkey app-association documents served from the API itself. Migration `0011`. |
 | 0.6.1 | 2026-07-29 | Dependency advisory handling written down as a policy (§9.1, ADR-0026) and the blocking audit gate returned to green: ten high-severity advisories across `next`, `postcss`, `sharp`, `js-yaml`, and `brace-expansion` closed by in-major bumps, range-scoped transitive overrides, and one patched dependency, with no new suppression added. Documents the single standing `lodash` suppression and its reachability analysis, and the two moderates left open below the gate threshold. |
 | 0.6.0 | 2026-07-28 | Phase 1 Slice 7: back-office controls implemented (ADR-0025). Separate admin identity isolated from customer authentication at every layer; mandatory two-factor sign-in (scrypt password + RFC 6238 TOTP, no session on one factor, replay-proof codes); 30-minute sliding idle / 8-hour absolute admin sessions with immediate revocation and disablement; a code-defined role→permission matrix behind `@RequirePermission`, with segregation of duties enforced structurally (no role holds both halves of the funding pair) and backed by runtime and database checks; four-eyes proven end to end on admin funding, executed atomically with the approval; every admin action recorded on the tamper-evident trail with `actor_type = 'admin'`; the audit read/verify surface exposed behind `audit.read`. The self-service dev funding faucet is retired (§3.1). New known gap: TOTP secrets are stored unencrypted (§6.2). |
 | 0.5.0 | 2026-07-13 | Phase 1 Slice 6: append-only, hash-chained audit trail (ADR-0024). Sensitive actions (P2P transfer, dev funding, SCA step-up, session revocation and refresh-reuse revocation, account provisioning) are recorded to an immutable, tamper-evident `audit_log` inside each action's own transaction; one global hash chain verified by `verifyAuditChain`, with the ledger's append-only triggers rejecting UPDATE/DELETE. Records hold internal references only (no raw PII). Dead-session retention tightened from a 90-day forensic grace to prompt purge now that the forensic record lives in the trail; the SCA-grant→session FK set to `ON DELETE CASCADE`. |

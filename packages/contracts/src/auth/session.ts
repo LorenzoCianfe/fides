@@ -6,8 +6,23 @@ export const SessionResponseSchema = z
     sessionId: z.string().uuid(),
     userId: z.string().uuid(),
     deviceId: z.string().uuid(),
-    accessToken: z.string().openapi({ description: 'Opaque bearer access token (fat_…)' }),
-    refreshToken: z.string().openapi({ description: 'Opaque rotating refresh token (frt_…)' }),
+    accessToken: z
+      .string()
+      .optional()
+      .openapi({
+        description:
+          'Opaque bearer access token (fat_…). Present in body transport only; omitted when the ' +
+          'caller requested cookie transport, where it is set as an httpOnly cookie instead ' +
+          '(ADR-0027).',
+      }),
+    refreshToken: z
+      .string()
+      .optional()
+      .openapi({
+        description:
+          'Opaque rotating refresh token (frt_…). Present in body transport only; omitted when the ' +
+          'caller requested cookie transport (ADR-0027).',
+      }),
     accessTokenExpiresAt: z.string().datetime(),
     refreshExpiresAt: z.string().datetime(),
     absoluteExpiresAt: z.string().datetime(),
@@ -17,7 +32,17 @@ export const SessionResponseSchema = z
 export type SessionResponseDto = z.infer<typeof SessionResponseSchema>;
 
 export const RefreshRequestSchema = z
-  .object({ refreshToken: z.string().min(1) })
+  .object({
+    refreshToken: z
+      .string()
+      .min(1)
+      .optional()
+      .openapi({
+        description:
+          'Omit in cookie transport: the refresh token is read from the httpOnly cookie scoped to ' +
+          'this route (ADR-0027). Required in body transport.',
+      }),
+  })
   .openapi('RefreshRequest');
 
 export type RefreshRequestDto = z.infer<typeof RefreshRequestSchema>;
