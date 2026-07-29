@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Document | Security architecture and controls |
-| Version | 0.6.0 |
+| Version | 0.6.1 |
 | Status | Living — Phase 1 controls landing |
 | Regulatory frame | EU/EEA: PSD2/SCA, GDPR (simulated, unlicensed) |
-| Last updated | 2026-07-28 |
+| Last updated | 2026-07-29 |
 
 ---
 
@@ -144,6 +144,19 @@ Known gap (Phase 1, Slice 7, ADR-0025): **admin TOTP secrets are stored unencryp
 - **Code review and ADRs** for security-affecting changes.
 - **Threat modelling** revisited per phase and before release (Phase 7).
 
+### 9.1 Dependency advisory handling (ADR-0026)
+
+The dependency gate is `pnpm audit --prod --audit-level=high`, blocking on every pull request. Advisories are resolved in a fixed order of preference, and the order matters more than the outcome of any single finding:
+
+1. **Move the direct dependency** within its pinned major. Framework majors stay deferred to Phase 7, so a fix requiring one is escalated rather than taken quietly.
+2. **Override the transitive pin** when an intermediate package holds a vulnerable version it has not yet released a fix for. Override keys carry the advisory's own vulnerable range, never a bare package name, so an override upgrades exactly the affected line and cannot silently drag an unrelated major across a breaking boundary.
+3. **Patch the dependency** when the only version clearing an advisory breaks its consumers. The patch restores the removed API rather than rewriting consumers, is pinned to an exact version so a later release fails loudly instead of dropping the shim, and carries a documented exit condition.
+4. **Suppress via `ignoreGhsas`** only when no patched version exists anywhere. Each suppression is recorded with its reachability analysis and revisited when the package moves.
+
+One suppression is currently in force: `GHSA-r5fr-rjxr-66jc` (code injection via `lodash`'s `_.template`), which reaches `apps/api` through `@nestjs/swagger`. Its declared patch target `lodash >= 4.18.0` has never been published, so there is nothing to upgrade to; `_.template` is not invoked on untrusted input on any reachable path. Because pnpm counts suppressed advisories in its summary tally but excludes them from the exit code, **the gate's exit status — not its headline count — is the signal**.
+
+Two findings sit below the gate threshold and are knowingly open: `@nestjs/core` (moderate) is patched only in a Nest major that belongs to Phase 7, and the remaining moderates are build-tooling transitives with no path from a shipped artifact.
+
 ## 10. Threat model (summary)
 
 **Key assets:** customer funds (ledger integrity), customer PII, authentication credentials, admin capabilities, and the audit trail.
@@ -180,6 +193,7 @@ Fides is not a licensed institution; this mapping documents how the design align
 
 | Version | Date | Change |
 |---|---|---|
+| 0.6.1 | 2026-07-29 | Dependency advisory handling written down as a policy (§9.1, ADR-0026) and the blocking audit gate returned to green: ten high-severity advisories across `next`, `postcss`, `sharp`, `js-yaml`, and `brace-expansion` closed by in-major bumps, range-scoped transitive overrides, and one patched dependency, with no new suppression added. Documents the single standing `lodash` suppression and its reachability analysis, and the two moderates left open below the gate threshold. |
 | 0.6.0 | 2026-07-28 | Phase 1 Slice 7: back-office controls implemented (ADR-0025). Separate admin identity isolated from customer authentication at every layer; mandatory two-factor sign-in (scrypt password + RFC 6238 TOTP, no session on one factor, replay-proof codes); 30-minute sliding idle / 8-hour absolute admin sessions with immediate revocation and disablement; a code-defined role→permission matrix behind `@RequirePermission`, with segregation of duties enforced structurally (no role holds both halves of the funding pair) and backed by runtime and database checks; four-eyes proven end to end on admin funding, executed atomically with the approval; every admin action recorded on the tamper-evident trail with `actor_type = 'admin'`; the audit read/verify surface exposed behind `audit.read`. The self-service dev funding faucet is retired (§3.1). New known gap: TOTP secrets are stored unencrypted (§6.2). |
 | 0.5.0 | 2026-07-13 | Phase 1 Slice 6: append-only, hash-chained audit trail (ADR-0024). Sensitive actions (P2P transfer, dev funding, SCA step-up, session revocation and refresh-reuse revocation, account provisioning) are recorded to an immutable, tamper-evident `audit_log` inside each action's own transaction; one global hash chain verified by `verifyAuditChain`, with the ledger's append-only triggers rejecting UPDATE/DELETE. Records hold internal references only (no raw PII). Dead-session retention tightened from a 90-day forensic grace to prompt purge now that the forensic record lives in the trail; the SCA-grant→session FK set to `ON DELETE CASCADE`. |
 | 0.4.0 | 2026-07-12 | Phase 1 Slice 5: PSD2 dynamic linking enforced on the internal P2P transfer (server-side action-hash recomputation, single-use grant consumed atomically in the posting transaction); object-level authorization on the wallet transaction-history read; dev funding faucet documented as a kill-switched, self-scoped interim control until admin RBAC (ADR-0023). |

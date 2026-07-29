@@ -1,0 +1,53 @@
+# ADR-0026: Dependency audit remediation — scoped transitive overrides and the brace-expansion patch
+
+- Status: Accepted
+- Date: 2026-07-29
+- Deciders: Solo maintainer
+- Refines: [ADR-0013](0013-ci-security-gates.md)
+
+## Context
+
+ADR-0013 makes `pnpm audit --prod --audit-level=high` a blocking CI gate. That gate was **red on `main`** at the start of Slice 8, reporting 34 advisories of which 15 were high. None of it was caused by Phase 1 code: `main` had not run CI since 2026-07-05, so roughly three weeks of newly-published advisories surfaced at once against packages that had been in the tree since Phase 0 — the `next`, `sharp`, `postcss`, `js-yaml`, and `brace-expansion` lines belonging to the web, admin, and mobile shells.
+
+Three forces shaped the response. First, **Slice 8 is the slice that builds on exactly these packages**, so leaving the gate red would mean adding client surface on an ungated tree. Second, the standing decision that **framework majors are deferred to Phase 7** rules out the major bumps some advisories nominally want. Third, most of the affected packages are **transitive** — pinned by an intermediate dependency that has not itself released a fix — so a direct version bump cannot reach them.
+
+Two claims recorded in `docs/phase-1-handoff.md` §8 turned out to be inaccurate and are corrected here: `postcss` had joined the advisory set (it was not in the original list), and the assertion that none of the advisories are reachable from `apps/api` does not hold for `js-yaml`, which arrives through `@nestjs/swagger@7.4.2`, a production dependency of the API.
+
+## Decision
+
+**Direct dependencies move within their pinned major.** `next` goes from 15.5.20 to `^15.5.22` in `apps/web` and `apps/admin`, closing three high advisories (a Server Actions denial of service and two server-side request forgeries). This is a patch-level move inside major 15 and therefore does not touch the Phase 7 framework-major deferral.
+
+**Transitive advisories are closed with version-range-scoped `pnpm.overrides`, not by waiting on upstream.** Three lines are forced forward: `postcss` (pinned at `8.4.31` *exactly* by `next`, so nothing but an override reaches it), `sharp` (`next`'s optional dependency), and `js-yaml`. Each override key carries the advisory's own vulnerable range rather than a bare package name, so it upgrades exactly the affected line and nothing else. This matters concretely for `js-yaml`: the tree also contains `3.15.0` under `cosmiconfig`, and an unscoped override would have dragged it across the 3→4 boundary that removed `safeLoad`. The existing `multer` and `glob` overrides already established this style.
+
+**`brace-expansion` is forced to `5.0.8` globally and patched to restore the callable default export.** This one advisory (`GHSA-mh99-v99m-4gvg`, an out-of-memory denial of service) declares its vulnerable range as `<=5.0.7`, which means **no version in the 1.x or 2.x lines can ever clear it** — including `2.1.3`, which actually *contains* the fix (it ships the `EXPANSION_MAX_LENGTH` bound and cites the CVE) but still matches the range and is still reported. The only clearing version is `5.0.8`, and `brace-expansion@4` had removed the callable default export: `5.0.8` exports `{ expand }`. The tree's four `minimatch` versions split across that break — `@3` and `@5` call the module itself, `@9` default-imports it in both its CommonJS and ESM entries, and only `@10` uses the named export — so forcing `5.0.8` alone breaks three of the four, which was confirmed by execution before the patch was written.
+
+The patch therefore targets **`brace-expansion` rather than the three `minimatch` versions**: one patched package instead of three, and it restores precisely the API that was removed rather than rewriting consumers. The CommonJS entry re-exports the function as `module.exports` while keeping `expand`, `default`, and the two limit constants attached; the ESM entry adds a default export. Named-export consumers are untouched. Because pnpm 9 keys `patchedDependencies` by exact version, the override pins `5.0.8` exactly — a future `5.0.9` will fail the patch loudly rather than silently dropping the shim.
+
+**Suppression is the last resort, and was not used here.** No new entry was added to `pnpm.auditConfig.ignoreGhsas`. The one pre-existing entry — `GHSA-r5fr-rjxr-66jc`, code injection via `lodash`'s `_.template`, reaching `apps/api` through `@nestjs/swagger` — stays, because its declared patch target (`lodash >= 4.18.0`) does not exist: there is nothing to upgrade to. It remains the single documented exception, and it is why the gate still tallies one high while exiting zero.
+
+**Two advisories are knowingly left open, both below the gate threshold.** `@nestjs/core` (moderate) is patched only in `>= 11.1.18`, a Nest 10 → 11 major that belongs to Phase 7. The remaining moderates and the one low are transitive build-tooling findings with no reachable path from a shipped artifact.
+
+## Consequences
+
+Positive:
+
+- The CI dependency-audit gate exits zero again, and Slice 8's client work lands on a gated tree rather than an ungated one.
+- Every fix is a real version movement, not a suppression: the code that actually runs is the patched code, and `pnpm audit` remains a meaningful signal instead of a list of exceptions.
+- The scoped-range override style is now established for three more lines, so a future advisory on an already-overridden package fails loudly (the range stops matching) instead of being silently absorbed.
+- `js-yaml` reaching `apps/api` through `@nestjs/swagger` is documented rather than assumed away, so the next audit review starts from an accurate reachability map.
+
+Trade-offs / negative:
+
+- **A patched dependency is now maintenance debt.** The `brace-expansion` patch must be revisited whenever the package moves, and pnpm's exact-version key guarantees the failure is noisy. It can be dropped entirely once the Expo toolchain stops pulling `glob@7`/`rimraf@3` (the source of `minimatch@3`) — that is the exit condition.
+- Forcing `brace-expansion` across three major boundaries means `minimatch@3` and `@5` now run expansion code they were never released against. The API is a single function with a stable contract and the behaviour was verified across all four `minimatch` versions, but this is a wider version jump than an override normally makes.
+- Overriding a transitive pin diverges the tree from what the intermediate package declares and tests against — `next` pins `postcss` exactly, and it now resolves to a version `next` has not shipped with. Both Next builds were verified.
+- The gate still reports one high in its summary tally (the ignored `lodash` advisory), so the headline number is not zero and reading the exit code — not the tally — remains necessary.
+
+## Alternatives considered
+
+- **Add `GHSA-mh99-v99m-4gvg` to `ignoreGhsas`** — the cheapest option, and defensible on reachability grounds (the affected paths enter only through Expo build tooling on a developer machine, ship in no bundle, and never see attacker-controlled glob patterns). Rejected in favour of actually shipping the fixed code: a suppression would also have masked the `minimatch@10` path, which *can* be fixed, and every suppression makes the gate a little less trustworthy.
+- **Patch the three `minimatch` versions instead of `brace-expansion`** — rejected: three patch files instead of one, each rewriting a consumer's import to work around a change it did not make, and each needing revision independently.
+- **Override `brace-expansion` per line (`@1` → 1.1.16, `@2` → 2.1.3)** — rejected: it clears the exponential-expansion advisory but not the out-of-memory one, whose range covers every version below 5.0.8, so the gate would have stayed red.
+- **Raise the gate to `--audit-level=critical`** — rejected outright: it turns a real control into a formality and would have hidden all fifteen highs rather than fixing any.
+- **Wait for upstream (`next`, Expo) to bump their pins** — rejected for this slice: the gate is blocking, the wait is unbounded, and Slice 8 is precisely the work that adds surface to these packages.
+- **Take the Dependabot majors already open** (react-native 0.79 → 0.86, drizzle-kit 0.30 → 0.31) — rejected: they are deliberately deferred, and none of the high advisories required them.
