@@ -29,3 +29,4 @@ Each ADR captures one significant decision, its context, and its consequences. A
 | [0023](0023-p2p-transfer-sca-enforcement-dev-funding.md) | Internal P2P transfer: SCA enforcement, dev funding, and the transaction-history read (refines 0019, 0021, 0022) | Accepted |
 | [0024](0024-append-only-hash-chained-audit-trail.md) | Append-only, hash-chained audit trail (refines 0005, 0019, 0021) | Accepted |
 | [0025](0025-admin-rbac-mfa-four-eyes.md) | Admin identity, RBAC, MFA, and four-eyes on admin funding (refines 0011) | Accepted |
+| [0026](0026-dependency-audit-remediation.md) | Dependency audit remediation: scoped transitive overrides and the brace-expansion patch (refines 0013) | Accepted |
