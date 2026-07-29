@@ -1,0 +1,35 @@
+diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
+index be9df86be09c7655787a65c55ae6da01858894c3..058842120919782e860fdafaa9ef88a71bdeda2a 100644
+--- a/dist/commonjs/index.js
++++ b/dist/commonjs/index.js
+@@ -260,4 +260,16 @@ function expand_(str, max, maxLength, isTop) {
+     }
+     return acc;
+ }
++// --- Fides compatibility shim (ADR-0026) ---------------------------------
++// brace-expansion 5 removed the callable default export that 1.x and 2.x
++// provided. GHSA-mh99-v99m-4gvg is patched only in >=5.0.8, so the audit gate
++// forces every line to 5.0.8 -- but minimatch@3 and @5 call the module itself
++// and minimatch@9 default-imports it. Re-expose both shapes; the named exports
++// minimatch@10 relies on are left untouched.
++expand.expand = expand;
++expand.default = expand;
++expand.EXPANSION_MAX = exports.EXPANSION_MAX;
++expand.EXPANSION_MAX_LENGTH = exports.EXPANSION_MAX_LENGTH;
++Object.defineProperty(expand, '__esModule', { value: true });
++module.exports = expand;
+ //# sourceMappingURL=index.js.map
+\ No newline at end of file
+diff --git a/dist/esm/index.js b/dist/esm/index.js
+index 6dc0392fc0feedb811e63d70a30be2736af17a3a..0f1faea8f69c3cd6a411029131aaa34536d583c6 100644
+--- a/dist/esm/index.js
++++ b/dist/esm/index.js
+@@ -256,4 +256,8 @@ function expand_(str, max, maxLength, isTop) {
+     }
+     return acc;
+ }
++// --- Fides compatibility shim (ADR-0026) ---------------------------------
++// See the CommonJS entry for the rationale. minimatch@9's ESM build does
++// `import expand from 'brace-expansion'`, which needs a default export.
++export default expand;
+ //# sourceMappingURL=index.js.map
