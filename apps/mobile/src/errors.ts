@@ -1,5 +1,6 @@
 import type { MessageKey } from '@fides/i18n';
 import { ApiError } from './api/client';
+import { PasskeysUnavailableError } from './auth/passkeys';
 
 /**
  * Where the failure happened. A bare error code is not enough to phrase a good
@@ -10,16 +11,18 @@ import { ApiError } from './api/client';
 export type ErrorContext = 'transfer' | 'signin' | 'generic';
 
 /**
- * Map a failure to a message the user can act on.
- *
- * Deliberately narrow: only failures with a genuinely more useful phrasing get
- * a specific message. Everything else falls back to the generic one rather than
- * echoing a server message that may leak internals or read as gibberish. The
- * correlation id is surfaced separately so support can find the request.
+ * Map a failure to a message the user can act on. Deliberately narrow: only
+ * failures with a genuinely more useful phrasing get a specific message, and
+ * everything else falls back to the generic one rather than echoing a server
+ * message that may leak internals or read as gibberish.
  */
 export function messageKeyForError(error: unknown, context: ErrorContext = 'generic'): MessageKey {
-  // A cancelled passkey prompt is a user choice, not a failure, and is the same
-  // in every context — so it is checked before anything else.
+  // Expo Go cannot load the native module. Saying so beats a generic failure
+  // the developer would otherwise have to guess at.
+  if (error instanceof PasskeysUnavailableError) return 'passkey.devBuildRequired';
+
+  // A cancelled passkey sheet is a user choice, not a failure, and reads the
+  // same in every context — so it is checked before anything else.
   if (isPasskeyCancellation(error)) return 'error.passkeyCancelled';
 
   if (error instanceof ApiError) {
@@ -49,7 +52,7 @@ export function messageKeyForError(error: unknown, context: ErrorContext = 'gene
 }
 
 /**
- * WebAuthn reports a cancelled or timed-out ceremony as `NotAllowedError`.
+ * Both platforms report a dismissed or timed-out ceremony as `NotAllowedError`.
  * That is a user choice, not a fault, and must not read as an error.
  */
 function isPasskeyCancellation(error: unknown): boolean {
@@ -59,9 +62,4 @@ function isPasskeyCancellation(error: unknown): boolean {
     'name' in error &&
     (error as { name: unknown }).name === 'NotAllowedError'
   );
-}
-
-/** The correlation id, when the failure carries one worth showing to support. */
-export function correlationIdOf(error: unknown): string | undefined {
-  return error instanceof ApiError ? error.correlationId : undefined;
 }

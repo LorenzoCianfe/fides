@@ -13,6 +13,10 @@ out/
 
 # Expo / React Native
 .expo/
+.expo-export*/
+# `expo prebuild` output: generated from app.config.ts, never hand-edited.
+apps/mobile/ios/
+apps/mobile/android/
 web-build/
 
 # Generated design theme (from @fides/ui-tokens)

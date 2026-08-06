@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { cn } from './cn';
-import { formatMoney, moneyDirection, type MoneyLike } from './money';
+import { formatMoney, moneyDirection, type MoneyLike } from '@fides/i18n';
 
 export interface AmountProps extends React.HTMLAttributes<HTMLSpanElement> {
   value: MoneyLike;

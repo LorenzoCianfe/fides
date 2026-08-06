@@ -12,14 +12,13 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "lint": "eslint ."
   },
   "peerDependencies": {
     "react": "^18 || ^19"
   },
   "dependencies": {
+    "@fides/i18n": "workspace:*",
     "@fides/ui-tokens": "workspace:*",
     "clsx": "^2.1.1",
     "tailwind-merge": "^2.6.0"
@@ -28,7 +27,6 @@
     "@fides/config": "workspace:*",
     "@types/react": "^19.0.0",
     "react": "^19.0.0",
-    "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "typescript": "^5.7.2"
   }
 }

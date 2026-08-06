@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import type { ReactNode } from 'react';
+import { isLocale, LOCALES } from '@fides/i18n';
 import { I18nProvider } from '../../lib/i18n/provider';
-import { isLocale, LOCALES } from '../../lib/i18n/messages';
 import '../globals.css';
 
 const appName = process.env.APP_NAME ?? 'Fides';

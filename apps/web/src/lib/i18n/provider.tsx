@@ -1,26 +1,19 @@
 'use client';
 
+import { DEFAULT_LOCALE, interpolate, MESSAGES, type Locale, type MessageKey } from '@fides/i18n';
 import * as React from 'react';
-import { DEFAULT_LOCALE, MESSAGES, type Locale, type MessageKey } from './messages';
 
+/**
+ * The React binding for the shared catalogue (`@fides/i18n`). The catalogue and
+ * the formatting are shared with mobile; only this binding is web-specific,
+ * because the two platforms differ in how they render, not in what they say.
+ */
 interface I18nValue {
   locale: Locale;
   t: (key: MessageKey, values?: Record<string, string | number>) => string;
 }
 
 const I18nContext = React.createContext<I18nValue | null>(null);
-
-/**
- * Interpolate `{name}` placeholders. Deliberately not a full ICU implementation:
- * the catalogue currently needs substitution only, and pretending to support
- * plurals we do not handle would be worse than not offering them.
- */
-function interpolate(template: string, values?: Record<string, string | number>): string {
-  if (!values) return template;
-  return template.replace(/\{(\w+)\}/g, (match, name: string) =>
-    name in values ? String(values[name]) : match,
-  );
-}
 
 export function I18nProvider({
   locale,

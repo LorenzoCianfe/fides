@@ -1,15 +1,14 @@
 'use client';
 
 import type { TransferResponseDto } from '@fides/contracts';
+import { formatMoney, parseAmountToMinor } from '@fides/i18n';
 import {
   Alert,
   Amount,
   Button,
   Card,
-  formatMoney,
   Input,
   PageShell,
-  parseAmountToMinor,
   Spinner,
   Stack,
   stackStyles,

@@ -1,25 +1,21 @@
+import type { Locale } from './locales';
+
 /**
- * i18n scaffolding (Slice 8).
+ * The user-facing copy for both clients (Slice 8).
  *
- * Deliberately dependency-free. `next-intl` pulls `@swc/core`,
- * `@parcel/watcher`, and five more packages — a large surface to add
+ * Shared rather than duplicated per app: web and mobile show the same product,
+ * and two catalogues would drift the moment either side edited a string. The
+ * clients differ in how they render, not in what they say.
+ *
+ * Deliberately dependency-free. `next-intl` and friends pull `@swc/core`,
+ * `@parcel/watcher`, and several more packages — a large surface to add
  * immediately after ADR-0026 cleared 34 advisories, for what this slice scopes
- * as *scaffolding*. Formatting rides on the platform's `Intl` (see
- * `formatMoney` in `@fides/ui-web`), which is what a library would call anyway.
- *
- * The structure — a typed catalogue per locale, one key space, a provider, and
- * a hook — is the part that matters: every user-facing string already goes
- * through it, so adopting a fuller library later is a swap, not a rewrite.
+ * as scaffolding. Formatting rides on the platform's `Intl` (see `formatMoney`),
+ * which is what a library would call anyway. The structure — a typed catalogue
+ * per locale over one key space — is the part that matters: every user-facing
+ * string already goes through it, so adopting a fuller library later is a swap,
+ * not a rewrite.
  */
-
-export const LOCALES = ['en', 'it'] as const;
-export type Locale = (typeof LOCALES)[number];
-export const DEFAULT_LOCALE: Locale = 'en';
-
-export function isLocale(value: string): value is Locale {
-  return (LOCALES as readonly string[]).includes(value);
-}
-
 const en = {
   'app.name': 'Fides',
   'app.tagline': 'Money, made clear.',
@@ -66,6 +62,10 @@ const en = {
     'This browser cannot create passkeys. Try a current Chrome, Safari, or Firefox.',
   'passkey.expired':
     'This enrolment link is no longer active. Start again and we will send a new code.',
+  // Expo Go cannot provide passkeys: they need native code, which means a
+  // development build. Saying so plainly beats a generic failure.
+  'passkey.devBuildRequired':
+    'Passkeys need a development build of this app. Expo Go cannot create them.',
 
   'signin.title': 'Sign in',
   'signin.intro': 'Enter your email and confirm with your passkey.',
@@ -154,6 +154,8 @@ const it: Record<MessageKey, string> = {
     'Questo browser non può creare passkey. Prova con una versione recente di Chrome, Safari o Firefox.',
   'passkey.expired':
     'Questa procedura di registrazione non è più attiva. Ricomincia e ti invieremo un nuovo codice.',
+  'passkey.devBuildRequired':
+    'Le passkey richiedono una development build di questa app. Expo Go non può crearle.',
 
   'signin.title': 'Accedi',
   'signin.intro': 'Inserisci la tua email e conferma con la passkey.',
@@ -195,8 +197,8 @@ const it: Record<MessageKey, string> = {
 };
 
 /**
- * Catalogues are typed against the English key space, so a missing or misspelled
- * Italian key is a compile error rather than a string that silently renders as
- * its own key at runtime.
+ * Catalogues are typed against the English key space, so a missing or
+ * misspelled Italian key is a compile error rather than a string that silently
+ * renders as its own key at runtime.
  */
 export const MESSAGES: Record<Locale, Record<MessageKey, string>> = { en, it };
