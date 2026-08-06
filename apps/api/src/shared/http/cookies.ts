@@ -6,12 +6,15 @@
  * known names, this follows the precedent set by the in-house TOTP and scrypt
  * helpers (ADR-0025) and keeps the dependency surface flat.
  *
- * The result is a null-prototype object on purpose: assigning a parsed name
- * like `__proto__` onto a plain `{}` would mutate the prototype rather than
- * create an own property, which is an attacker-controlled write.
+ * A `Map` rather than an object, because every name here comes from a request
+ * header an attacker controls. An object turns `__proto__` into a write against
+ * the prototype instead of an own property; `Object.create(null)` avoids that,
+ * but only as long as nobody later "tidies" it into a literal. A `Map` has no
+ * prototype chain to reach at all, so the hazard is gone structurally rather
+ * than by a guard a future edit could quietly drop.
  */
-export function parseCookieHeader(header: string | undefined): Record<string, string> {
-  const jar: Record<string, string> = Object.create(null) as Record<string, string>;
+export function parseCookieHeader(header: string | undefined): Map<string, string> {
+  const jar = new Map<string, string>();
   if (!header) return jar;
 
   for (const segment of header.split(';')) {
@@ -21,9 +24,9 @@ export function parseCookieHeader(header: string | undefined): Record<string, st
 
     const name = segment.slice(0, separator).trim();
     // First occurrence wins, matching how browsers resolve duplicate names.
-    if (!name || name in jar) continue;
+    if (!name || jar.has(name)) continue;
 
-    jar[name] = decodeCookieValue(segment.slice(separator + 1).trim());
+    jar.set(name, decodeCookieValue(segment.slice(separator + 1).trim()));
   }
 
   return jar;
@@ -31,7 +34,7 @@ export function parseCookieHeader(header: string | undefined): Record<string, st
 
 /** Read one cookie, treating an empty value as absent. */
 export function readCookie(header: string | undefined, name: string): string | undefined {
-  const value = parseCookieHeader(header)[name];
+  const value = parseCookieHeader(header).get(name);
   return value === undefined || value.length === 0 ? undefined : value;
 }
 

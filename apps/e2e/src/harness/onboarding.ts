@@ -67,17 +67,41 @@ export async function onboard(context: BrowserContext, label: string): Promise<C
  * rather than waiting on the open page.
  */
 export async function expectBalance(page: Page, formatted: string): Promise<void> {
+  await expectEventually(
+    page,
+    formatted,
+    `Expected the dashboard to show a balance of ${formatted}`,
+  );
+}
+
+/**
+ * Wait for a statement row to appear.
+ *
+ * `transaction_history` is a read model projected **asynchronously** from
+ * `ledger.entry.posted` by the outbox dispatcher, unlike balances, which the
+ * posting transaction maintains synchronously (ADR-0019). So a transfer can be
+ * complete, and the balance already correct, while the movement has not yet
+ * been projected — and the activity screen reads once on mount. Asserting
+ * without reloading is a race that passes on a fast machine and fails on CI,
+ * which is exactly how it first failed.
+ */
+export async function expectStatementRow(page: Page, formatted: string): Promise<void> {
+  await expectEventually(
+    page,
+    formatted,
+    `Expected the statement to show ${formatted} once the projection caught up`,
+  );
+}
+
+/** Reload until the text appears, or fail with a message naming what was awaited. */
+async function expectEventually(page: Page, formatted: string, message: string): Promise<void> {
   await expect
     .poll(
       async () => {
         await page.reload();
-        return page.getByText(formatted, { exact: true }).isVisible();
+        return page.getByText(formatted, { exact: true }).first().isVisible();
       },
-      {
-        timeout: 30_000,
-        intervals: [250, 500, 1000],
-        message: `Expected the dashboard to show a balance of ${formatted}`,
-      },
+      { timeout: 30_000, intervals: [250, 500, 1000], message },
     )
     .toBe(true);
 }

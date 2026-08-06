@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { findCustomerId, fundCustomer } from '../src/harness/admin';
-import { expectBalance, onboard } from '../src/harness/onboarding';
+import { expectBalance, expectStatementRow, onboard } from '../src/harness/onboarding';
 
 /**
  * The Phase 1 exit criteria, walked end to end through the real UI:
@@ -82,8 +82,10 @@ test('a funded customer sends money to another customer', async ({ browser }) =>
 
       await sender.page.getByRole('link', { name: 'View activity' }).click();
       await expect(sender.page.getByRole('heading', { name: 'Activity' })).toBeVisible();
-      // Signed as an outgoing movement, which is the ledger's view of it.
-      await expect(sender.page.getByText('-€25.50', { exact: true }).first()).toBeVisible();
+      // Signed as an outgoing movement, which is the ledger's view of it. Polled
+      // because the statement is an asynchronous projection while the balance
+      // above is not — see `expectStatementRow`.
+      await expectStatementRow(sender.page, '-€25.50');
     });
 
     await test.step('and arrived with the recipient', async () => {

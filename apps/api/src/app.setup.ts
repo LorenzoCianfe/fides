@@ -82,8 +82,11 @@ export function configureApp(app: INestApplication, env: Env): void {
 function applySecurityHeaders(app: INestApplication): void {
   app.use(
     helmet({
-      // Applied separately below, because /docs needs different directives.
-      contentSecurityPolicy: false,
+      // The strict policy is the default for everything. Swagger's relaxation is
+      // layered on below for `/docs` alone, rather than disabling CSP here and
+      // reinstating it afterwards — a momentary `false` is indistinguishable,
+      // to a reader or a scanner, from having no policy at all.
+      contentSecurityPolicy: { directives: { ...API_CSP_DIRECTIVES } },
       hsts: { maxAge: HSTS_MAX_AGE_SECONDS, includeSubDomains: true, preload: true },
       referrerPolicy: { policy: 'no-referrer' },
       // The API is read cross-origin by the web client under CORS, which is the
@@ -93,13 +96,12 @@ function applySecurityHeaders(app: INestApplication): void {
     }),
   );
 
+  // Swagger UI ships inline styles and scripts, so `/docs` needs looser
+  // directives. This runs after the strict policy and replaces the header on
+  // that path only; every other route keeps `default-src 'none'`.
   const docsCsp = helmet.contentSecurityPolicy({ directives: { ...DOCS_CSP_DIRECTIVES } });
-  const apiCsp = helmet.contentSecurityPolicy({ directives: { ...API_CSP_DIRECTIVES } });
-  app.use((request: { path?: string }, response: unknown, next: () => void) =>
-    (request.path?.startsWith('/docs') ? docsCsp : apiCsp)(
-      request as never,
-      response as never,
-      next,
-    ),
-  );
+  app.use((request: { path?: string }, response: unknown, next: () => void) => {
+    if (!request.path?.startsWith('/docs')) return next();
+    return docsCsp(request as never, response as never, next);
+  });
 }
