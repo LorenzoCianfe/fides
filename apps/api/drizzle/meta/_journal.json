@@ -78,6 +78,13 @@
       "when": 1785170699055,
       "tag": "0010_admin_rbac",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785310318169,
+      "tag": "0011_cookie_transport_csrf",
+      "breakpoints": true
     }
   ]
 }

@@ -18,6 +18,7 @@
     "react-native": ">=0.76"
   },
   "dependencies": {
+    "@fides/i18n": "workspace:*",
     "@fides/ui-tokens": "workspace:*"
   },
   "devDependencies": {

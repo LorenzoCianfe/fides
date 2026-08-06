@@ -7,6 +7,7 @@ import {
 } from '@fides/domain';
 import { and, desc, eq, gt, isNull, lt, or } from 'drizzle-orm';
 import type { Database, DbExecutor } from '../../../database/db.types';
+import { csrfTokenMatches } from '../../../shared/crypto/csrf';
 import { generateToken, sha256Hex } from '../../../shared/crypto/secrets';
 import { AuditAction, AuditResource } from '../../audit/application/audit-actions';
 import { AuditService } from '../../audit/application/audit.service';
@@ -68,6 +69,12 @@ export interface Principal {
   readonly sessionId: string;
   readonly deviceId: string;
   readonly userStatus: UserRow['status'];
+  /**
+   * SHA-256 of this session's CSRF token, or null when the session is carried
+   * by a bearer token (ADR-0027). The guard needs it to complete the
+   * double-submit check without a second query.
+   */
+  readonly csrfTokenHash: string | null;
 }
 
 /**
@@ -176,14 +183,38 @@ export class SessionService {
       sessionId: session.id,
       deviceId: session.deviceId,
       userStatus: row.userStatus,
+      csrfTokenHash: session.csrfTokenHash,
     };
+  }
+
+  /**
+   * Bind a CSRF token to a session, or clear it (ADR-0027).
+   *
+   * Kept separate from `issueSession` so the ceremony services that mint
+   * sessions stay unaware of HTTP transport: the controller decides the
+   * transport, and only a cookie-mode response pays for this write. A session
+   * with no hash cannot authenticate by cookie at all, so the check fails
+   * closed for anything issued in bearer mode.
+   */
+  async attachCsrfToken(sessionId: string, csrfTokenHash: string | null): Promise<void> {
+    await this.db.update(sessions).set({ csrfTokenHash }).where(eq(sessions.id, sessionId));
   }
 
   /**
    * Rotate the token pair. The superseded refresh hash is retained so that its
    * reuse — the stolen-token signal — revokes the session on sight.
+   *
+   * `presentedCsrfToken` is supplied only when the refresh token arrived on a
+   * cookie (ADR-0027). Refresh is deliberately outside `SessionAuthGuard` — it
+   * runs on an expired access token — so the guard's CSRF check cannot cover
+   * it, yet it is state-changing and cookie-driven. The check therefore runs
+   * here, against the row already loaded `FOR UPDATE`, before anything rotates.
    */
-  async refresh(refreshToken: string, correlationId?: string): Promise<IssuedSession> {
+  async refresh(
+    refreshToken: string,
+    correlationId?: string,
+    presentedCsrfToken?: { readonly value: string | undefined },
+  ): Promise<IssuedSession> {
     const hash = sha256Hex(refreshToken);
 
     // Reuse detection must OUTLIVE this transaction: throwing inside it would
@@ -223,6 +254,16 @@ export class SessionService {
         });
         return { kind: 'reuse', sessionId: session.id };
       }
+      // Ordered after reuse detection so a stolen token still trips the alarm,
+      // but before any rotation: a cross-site caller must not be able to churn
+      // a victim's tokens, which would strand the real client on a dead one.
+      if (
+        presentedCsrfToken &&
+        !csrfTokenMatches(presentedCsrfToken.value, session.csrfTokenHash)
+      ) {
+        throw new AuthorizationError('Missing or invalid CSRF token');
+      }
+
       if (
         session.refreshExpiresAt.getTime() <= now.getTime() ||
         session.absoluteExpiresAt.getTime() <= now.getTime()

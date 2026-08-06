@@ -18,6 +18,7 @@
     "react": "^18 || ^19"
   },
   "dependencies": {
+    "@fides/i18n": "workspace:*",
     "@fides/ui-tokens": "workspace:*",
     "clsx": "^2.1.1",
     "tailwind-merge": "^2.6.0"

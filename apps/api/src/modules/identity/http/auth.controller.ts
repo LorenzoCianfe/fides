@@ -1,3 +1,4 @@
+import { AuthenticationError, type EventClock } from '@fides/domain';
 import {
   Body,
   Controller,
@@ -7,6 +8,7 @@ import {
   Inject,
   Post,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
@@ -19,13 +21,24 @@ import type {
   WebAuthnRequestOptionsDto,
 } from '@fides/contracts';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { ZodValidationPipe } from 'nestjs-zod';
+import { ENV, type Env } from '../../../config/env';
+import { CLOCK } from '../../../shared/tokens';
 import { extractBearerToken } from '../application/auth.guard';
 import { EmailVerificationService } from '../application/email-verification.service';
 import { RegistrationService } from '../application/registration.service';
-import { SessionService } from '../application/session.service';
+import { SessionService, type IssuedSession } from '../application/session.service';
 import { WebAuthnService } from '../application/webauthn.service';
+import {
+  generateCsrfToken,
+  hashCsrfToken,
+  readCsrfHeader,
+  readRefreshCookie,
+  resolveTokenTransport,
+  setSessionCookies,
+  type CookieTransportConfig,
+} from './token-transport';
 import {
   FinishAuthenticationDto,
   FinishPasskeyRegistrationDto,
@@ -53,7 +66,13 @@ export class AuthController {
     @Inject(EmailVerificationService) private readonly emailVerification: EmailVerificationService,
     @Inject(WebAuthnService) private readonly webauthn: WebAuthnService,
     @Inject(SessionService) private readonly sessions: SessionService,
+    @Inject(ENV) private readonly env: Env,
+    @Inject(CLOCK) private readonly clock: EventClock,
   ) {}
+
+  private get cookieConfig(): CookieTransportConfig {
+    return { secure: this.env.COOKIE_SECURE, sameSite: this.env.COOKIE_SAMESITE };
+  }
 
   @Post('register')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -98,6 +117,7 @@ export class AuthController {
   async finishPasskeyRegistration(
     @Body(new ZodValidationPipe(FinishPasskeyRegistrationDto)) body: FinishPasskeyRegistrationDto,
     @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
   ): Promise<FinishPasskeyRegistrationResponseDto> {
     const authenticatedUserId = await this.resolveOptionalUserId(request);
     const result = await this.webauthn.finishRegistration({
@@ -109,7 +129,7 @@ export class AuthController {
     });
     return {
       credentialId: result.credentialId,
-      session: result.session ? toSessionDto(result.session) : null,
+      session: result.session ? await this.deliverSession(request, response, result.session) : null,
     };
   }
 
@@ -125,12 +145,14 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async finishAuthentication(
     @Body(new ZodValidationPipe(FinishAuthenticationDto)) body: FinishAuthenticationDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
   ): Promise<SessionResponseDto> {
     const session = await this.webauthn.finishAuthentication({
       response: body.response as AuthenticationResponseJSON,
       device: body.device,
     });
-    return toSessionDto(session);
+    return this.deliverSession(request, response, session);
   }
 
   @Post('refresh')
@@ -139,8 +161,44 @@ export class AuthController {
   async refresh(
     @Headers('x-correlation-id') correlationId: string | undefined,
     @Body(new ZodValidationPipe(RefreshDto)) body: RefreshDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
   ): Promise<SessionResponseDto> {
-    return toSessionDto(await this.sessions.refresh(body.refreshToken, correlationId));
+    // In cookie transport the client cannot read the httpOnly refresh cookie,
+    // so the token is taken from the cookie the browser sends automatically.
+    // A body-supplied token is not ambient and needs no CSRF proof; a cookie
+    // one does, and the service checks it against the locked session row.
+    const cookieToken = body.refreshToken ? undefined : readRefreshCookie(request);
+    const refreshToken = body.refreshToken ?? cookieToken;
+    if (!refreshToken) throw new AuthenticationError('Missing refresh token');
+
+    const session = await this.sessions.refresh(
+      refreshToken,
+      correlationId,
+      cookieToken ? { value: readCsrfHeader(request) } : undefined,
+    );
+    return this.deliverSession(request, response, session);
+  }
+
+  /**
+   * Hand the session back over the transport the caller asked for (ADR-0027).
+   *
+   * Body transport is the default and is untouched. Cookie transport writes the
+   * token pair to httpOnly cookies, mints a CSRF token bound to the session,
+   * and strips both tokens from the payload — a client in cookie mode must not
+   * be able to read them at all, or the mode buys nothing.
+   */
+  private async deliverSession(
+    request: Request,
+    response: Response,
+    session: IssuedSession,
+  ): Promise<SessionResponseDto> {
+    if (resolveTokenTransport(request) !== 'cookie') return toSessionDto(session);
+
+    const csrfToken = generateCsrfToken();
+    await this.sessions.attachCsrfToken(session.sessionId, hashCsrfToken(csrfToken));
+    setSessionCookies(response, session, csrfToken, this.cookieConfig, this.clock.now());
+    return toSessionDto(session, false);
   }
 
   /**

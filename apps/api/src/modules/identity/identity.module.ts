@@ -19,6 +19,7 @@ import {
   type SessionConfig,
 } from './application/session.service';
 import { WebAuthnService, type WebAuthnConfig } from './application/webauthn.service';
+import { AppAssociationController } from './http/app-association.controller';
 import { AuthController } from './http/auth.controller';
 import { ScaController } from './http/sca.controller';
 import { SessionsController } from './http/sessions.controller';
@@ -53,7 +54,7 @@ function webauthnConfigFromEnv(env: Env): WebAuthnConfig {
       }),
     }),
   ],
-  controllers: [AuthController, SessionsController, ScaController],
+  controllers: [AuthController, SessionsController, ScaController, AppAssociationController],
   providers: [
     {
       provide: SessionService,

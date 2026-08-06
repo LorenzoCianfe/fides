@@ -12,12 +12,17 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@babel/runtime": "^7.26.0",
+    "@fides/contracts": "workspace:*",
+    "@fides/i18n": "workspace:*",
     "@fides/ui-mobile": "workspace:*",
     "@fides/ui-tokens": "workspace:*",
     "expo": "^53.0.0",
+    "expo-secure-store": "~14.2.4",
     "expo-status-bar": "~2.2.3",
     "react": "^19.0.0",
-    "react-native": "^0.79.0"
+    "react-native": "^0.79.0",
+    "react-native-passkeys": "^0.4.2"
   },
   "devDependencies": {
     "@fides/config": "workspace:*",
