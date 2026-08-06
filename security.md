@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Document | Security architecture and controls |
-| Version | 0.7.0 |
-| Status | Living — Phase 1 controls landing |
+| Version | 0.7.2 |
+| Status | Living — Phase 1 complete; remediation in progress |
 | Regulatory frame | EU/EEA: PSD2/SCA, GDPR (simulated, unlicensed) |
-| Last updated | 2026-07-29 |
+| Last updated | 2026-08-06 |
 
 ---
 
@@ -164,9 +164,11 @@ The dependency gate is `pnpm audit --prod --audit-level=high`, blocking on every
 3. **Patch the dependency** when the only version clearing an advisory breaks its consumers. The patch restores the removed API rather than rewriting consumers, is pinned to an exact version so a later release fails loudly instead of dropping the shim, and carries a documented exit condition.
 4. **Suppress via `ignoreGhsas`** only when no patched version exists anywhere. Each suppression is recorded with its reachability analysis and revisited when the package moves.
 
-One suppression is currently in force: `GHSA-r5fr-rjxr-66jc` (code injection via `lodash`'s `_.template`), which reaches `apps/api` through `@nestjs/swagger`. Its declared patch target `lodash >= 4.18.0` has never been published, so there is nothing to upgrade to; `_.template` is not invoked on untrusted input on any reachable path. Because pnpm counts suppressed advisories in its summary tally but excludes them from the exit code, **the gate's exit status — not its headline count — is the signal**.
+**No suppression is currently in force.** The single standing exception — `GHSA-r5fr-rjxr-66jc`, code injection via `lodash`'s `_.template`, reaching `apps/api` through `@nestjs/swagger` — was retired on 2026-08-06 once its patch target finally existed (`lodash@4.18.0` was published 2026-03-31, having been absent when the suppression was recorded). It is now closed by a range-scoped override in the ordinary way, verified beforehand against the thirty `lodash` utilities `@nestjs/swagger` actually calls — none of which is `_.template`. `pnpm.auditConfig` has been removed from the root manifest, and the gate reports **zero high-severity advisories**.
 
-Two findings sit below the gate threshold and are knowingly open: `@nestjs/core` (moderate) is patched only in a Nest major that belongs to Phase 7, and the remaining moderates are build-tooling transitives with no path from a shipped artifact.
+The reading rule still applies to whatever is suppressed next: pnpm counts suppressed advisories in its summary tally but excludes them from the exit code, so **the gate's exit status — not its headline count — is the signal**. With nothing suppressed the two agree, which is the state to prefer.
+
+Two findings sit below the gate threshold and are knowingly open: `@nestjs/core` (moderate) is patched only in a Nest major that belongs to Phase 7, and the remaining moderates are build-tooling transitives with no path from a shipped artifact. The `brace-expansion` patch remains live maintenance debt; its exit condition is the React Native major (`react-native@0.79.7` is what pulls the `glob@7`/`rimraf@3` that pin the `minimatch@3` needing the shim — not the Expo packages, which now resolve `glob@13`), so it retires with the Phase 7 Expo SDK move and not before.
 
 ## 10. Threat model (summary)
 
@@ -204,6 +206,7 @@ Fides is not a licensed institution; this mapping documents how the design align
 
 | Version | Date | Change |
 |---|---|---|
+| 0.7.2 | 2026-08-06 | Phase 1 remediation, Slice 9 (dependency hygiene). The last standing audit suppression is retired (§9.1): `GHSA-r5fr-rjxr-66jc` was suppressed because its patch target `lodash >= 4.18.0` had never been published, which ceased to be true on 2026-03-31. It is now closed by a range-scoped override, verified first against the thirty `lodash` utilities `@nestjs/swagger` actually calls (none of them `_.template`, the vulnerable function, which 4.18 hardened rather than removed). `pnpm.auditConfig` is gone from the root manifest and the gate reports zero high-severity advisories, so its headline count and its exit status now agree. Also corrects the `brace-expansion` patch's exit condition, which was attributed to the Expo toolchain: every `@expo/*` package resolves `glob@13`, and the `glob@7`/`rimraf@3` that pin the shimmed `minimatch@3` all enter through `react-native@0.79.7` itself, making the patch retirable only with the Phase 7 React Native major. |
 | 0.7.1 | 2026-08-06 | Phase 1 Slice 8 Waves B–D. Corrects the CSRF cookie's scope (§2.3): it was path-scoped to `/v1` alongside the access cookie, which made it unreadable to a client served from `/` and failed every state-changing request in cookie mode. Now `Path=/`, with the path asserted on both the set and the clear. The defect was invisible to the supertest-based integration suite — supertest sends whatever `Cookie` header a test constructs and models no path scoping — and was found on the first complete run of the new browser-driven end-to-end suite, which is the argument for having one. Mobile holds its bearer token pair in the platform keystore (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`: unreadable while locked, excluded from encrypted backups), and its refresh path is single-flighted so concurrent refreshes cannot trip rotation reuse detection and revoke a legitimate session. The web client carries the one-time enrolment credential in `sessionStorage` rather than a URL, keeping it out of browser history, the address bar, and proxy logs. |
 | 0.7.0 | 2026-07-29 | Phase 1 Slice 8 Wave A: client token transport and web hardening (ADR-0027). Closes two standing gaps. An **opt-in, per-request httpOnly-cookie transport** (§2.3) removes the ADR-0021 XSS exposure of a browser-held refresh token: the token pair is withheld from the response body, `SameSite=Strict`, with the refresh cookie scoped to the single route that spends it, defended by a double-submit CSRF token hashed onto the session row and enforced inside the refresh rotation transaction as well as by the guard. Bearer callers are exempt and unchanged; a bearer-issued session cannot be driven from a cookie (fails closed). **Security headers** (§6.1) via helmet: two-year HSTS with preload, a `default-src 'none'` policy on the JSON surface with the Swagger relaxation confined to `/docs`, and credentialed CORS. Adds the native passkey app-association documents served from the API itself. Migration `0011`. |
 | 0.6.1 | 2026-07-29 | Dependency advisory handling written down as a policy (§9.1, ADR-0026) and the blocking audit gate returned to green: ten high-severity advisories across `next`, `postcss`, `sharp`, `js-yaml`, and `brace-expansion` closed by in-major bumps, range-scoped transitive overrides, and one patched dependency, with no new suppression added. Documents the single standing `lodash` suppression and its reachability analysis, and the two moderates left open below the gate threshold. |
