@@ -5,9 +5,17 @@
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) |
 | Branch | Slices 1–7 **merged to `main`** via [PR #21](https://github.com/LorenzoCianfe/fides/pull/21) at the end of Slice 7 (see §6); Slice 8 branches from `main` |
 | Verified | `apps/api` 260/260 tests green; lint, typecheck, and production build clean across every package; dependency audit gate green (ADR-0026) |
-| Last updated | 2026-07-29 |
+| Last updated | 2026-08-06 |
+
+> **Phase 1 is COMPLETE.** All eight slices are done; Slice 8 landed via [PR #30](https://github.com/LorenzoCianfe/fides/pull/30).
+> **Start the next session from [`next-session-prompt.md`](next-session-prompt.md)**, which carries the agreed order of work — clear the Phase 1 debt first (§8 below), then Phase 2 with the admin UI early — along with the corrected environment notes and the traps Slice 8 surfaced. The rest of this document remains the detailed record of how Phase 1 was built.
+
+<details>
+<summary>Historical resume point (superseded)</summary>
 
 > Resume point: **Slice 8 (clients: web + mobile)**. Slice 7 (admin RBAC, MFA, and four-eyes, ADR-0025) is **done**, which completes the whole Phase 1 backend — Slice 8 is the last slice of Phase 1 and starts from `main`, which now carries the whole backend. Read §4 (locked decisions) before writing code — the DI/validation convention (explicit `@Inject` tokens and explicit `ZodValidationPipe(Dto)` on params; see §6) holds for all new surface. Slice 7 added the `admin` module: a separate `admins` identity with password + TOTP, a shorter sliding-idle session, a code-defined permission matrix behind `@RequirePermission`, the read-only views (customers, wallet history, ledger reconciliation, and the audit read/verify surface Slice 6 deferred), and maker-checker proven end to end on admin funding — which retired the dev faucet. Auth policy is pinned in ADR-0020/0021; the account model in ADR-0022; transfer/funding/history in ADR-0023; the audit trail in ADR-0024; the back office in ADR-0025.
+
+</details>
 
 ---
 
