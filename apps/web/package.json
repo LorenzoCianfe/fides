@@ -12,8 +12,10 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@fides/contracts": "workspace:*",
     "@fides/ui-tokens": "workspace:*",
     "@fides/ui-web": "workspace:*",
+    "@simplewebauthn/browser": "^13.3.0",
     "next": "^15.5.22",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
