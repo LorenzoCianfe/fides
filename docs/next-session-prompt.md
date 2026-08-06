@@ -69,9 +69,20 @@ work slice by slice with an ADR per substantive decision.
 
 **Dependency and toolchain debt:**
 
-- **Three Dependabot PRs are deliberately open**: #20 (react-native 0.79→0.86),
-  #19 (drizzle-kit 0.30→0.31), #18 (pnpm/action-setup 4→6). Majors were deferred
-  to Phase 7. Re-evaluate whether #18 and #19 should land now.
+- **[PR #26](https://github.com/LorenzoCianfe/fides/pull/26) is open and must not
+  be merged as it stands.** It groups harmless `react`/`react-dom`/`openapi3-ts`
+  bumps together with **`react-native` `^0.79.0` → `^0.86.2`**, which breaks the
+  mobile app: Expo 53 is paired with RN 0.79, and RN 0.86 pulls a Metro whose
+  `exports` map no longer provides `./src/lib/TerminalReporter`, which the Expo
+  53 CLI requires. Verified by checking the branch out and bundling. Moving RN
+  means moving the Expo SDK with it — a Phase 7 decision, not a minor-patch
+  bump. Either wait for Dependabot to regroup without `react-native`, or take
+  the RN and Expo SDK move deliberately as its own piece of work. The reasoning
+  is recorded as a comment on the PR.
+- The other Dependabot work has landed: dev tooling (eslint, prettier, turbo,
+  tsx, `drizzle-kit` 0.30→0.31, `@types/node`) via #29, and the GitHub Actions
+  majors (`pnpm/action-setup` v4→v6, `setup-node` v6→v7, `upload-artifact`
+  v4→v7) via #31.
 - **The `brace-expansion` patch is live maintenance debt** (`patches/brace-expansion@5.0.9.patch`,
   ADR-0026 plus its addendum). Its exit condition is the Expo toolchain dropping
   `glob@7`/`rimraf@3`, which is what drags in the `minimatch@3` needing the
@@ -196,6 +207,13 @@ Worth knowing before touching the clients or the E2E suite:
   `disableHierarchicalLookup` targets npm and yarn, where everything is hoisted
   flat; pnpm keeps a package's dependencies as siblings inside its own directory,
   so walking up is exactly what resolves them.
+- **A green pipeline is only as wide as its jobs.** `apps/mobile` had no `build`
+  script, so `pnpm build` skipped it; the end-to-end suite covers web only; and
+  Expo declares its peers as `*`, so the resolver raises nothing. Three blind
+  spots lined up, and a dependency bump that made the app impossible to bundle
+  passed all six checks. `expo export` now runs as that package's `build`. When
+  adding a new app or package, check that something in CI actually executes it —
+  lint and typecheck passing is not the same as the thing working.
 
 ## How to work
 
