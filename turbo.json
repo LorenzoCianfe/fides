@@ -13,7 +13,7 @@
         "IOS_BUNDLE_ID",
         "ANDROID_PACKAGE"
       ],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**", ".expo-export/**"]
     },
     "dev": {
       "cache": false,
