@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import postgres from 'postgres';
 import { API_PORT, API_URL, WEB_PORT, WEB_URL } from './ports';
@@ -71,6 +71,37 @@ function requireBuild(path: string, hint: string): void {
   if (existsSync(path)) return;
   throw new Error(
     `Missing build output at ${path}.\nThe E2E suite runs the built apps. Run: ${hint}`,
+  );
+}
+
+/**
+ * Confirm the web bundle was built for *this* suite's API origin.
+ *
+ * A plain `pnpm build` produces a perfectly valid bundle pointing at the
+ * default port, and `requireBuild` cannot tell the difference — the directory
+ * is there either way. Left undetected it surfaces as requests blocked by a CSP
+ * naming the wrong origin, which looks nothing like its cause. Since
+ * `NEXT_PUBLIC_API_URL` is inlined verbatim, the built chunks can simply be
+ * searched for it.
+ */
+function requireBuildTargetsThisApi(hint: string): void {
+  const chunks = resolve(WEB_DIR, '.next/static/chunks');
+  if (!existsSync(chunks)) return;
+
+  const found = readdirSync(chunks, { recursive: true, encoding: 'utf8' }).some((entry) => {
+    if (!entry.endsWith('.js')) return false;
+    try {
+      return readFileSync(resolve(chunks, entry), 'utf8').includes(API_URL);
+    } catch {
+      return false;
+    }
+  });
+
+  if (found) return;
+  throw new Error(
+    `The web bundle in ${WEB_DIR} was not built for ${API_URL}.\n` +
+      'NEXT_PUBLIC_API_URL is inlined at build time (and feeds the app CSP), so a\n' +
+      `plain \`pnpm build\` points it at the default port. Rebuild with: ${hint}`,
   );
 }
 
@@ -173,6 +204,7 @@ export async function startStack(): Promise<Stack> {
   const buildCommand = 'pnpm --filter @fides/e2e run build:stack';
   requireBuild(resolve(API_DIR, 'dist/main.js'), buildCommand);
   requireBuild(resolve(WEB_DIR, '.next'), buildCommand);
+  requireBuildTargetsThisApi(buildCommand);
 
   await Promise.all([assertPortFree(API_PORT, 'API'), assertPortFree(WEB_PORT, 'web app')]);
 
