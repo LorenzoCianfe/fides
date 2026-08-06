@@ -204,6 +204,14 @@ describe('cookie token transport (integration, ADR-0027)', () => {
     const csrf = rawCookie(response, CSRF_COOKIE);
     expect(csrf).not.toContain('HttpOnly');
     expect(csrf).toContain('SameSite=Strict');
+    // And site-wide, which is the other half of "readable". `document.cookie`
+    // exposes only cookies whose path is a prefix of the *document's* path, and
+    // the web client is served from `/`, never from `/v1`. Scoped to the API's
+    // path this cookie is invisible to the only code that has to echo it, and
+    // every state-changing request fails CSRF — which is precisely what
+    // happened until the end-to-end suite drove a real browser through it.
+    expect(csrf).toContain('Path=/');
+    expect(csrf).not.toContain('Path=/v1');
   });
 
   it('leaves body transport exactly as it was', async () => {
@@ -264,6 +272,8 @@ describe('cookie token transport (integration, ADR-0027)', () => {
     // would keep the original and sit on a revoked credential.
     expect(rawCookie(loggedOut, ACCESS_COOKIE)).toContain('Path=/v1');
     expect(rawCookie(loggedOut, REFRESH_COOKIE)).toContain('Path=/v1/auth/refresh');
+    expect(rawCookie(loggedOut, CSRF_COOKIE)).toContain('Path=/');
+    expect(rawCookie(loggedOut, CSRF_COOKIE)).not.toContain('Path=/v1');
     expect(cookieValue(loggedOut, ACCESS_COOKIE)).toBe('');
 
     await request(server).get('/v1/auth/sessions').set('Cookie', session.authCookies).expect(401);

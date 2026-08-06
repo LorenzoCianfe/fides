@@ -28,13 +28,28 @@ export const ACCESS_COOKIE = 'fides_at';
 export const REFRESH_COOKIE = 'fides_rt';
 export const CSRF_COOKIE = 'fides_csrf';
 
-/** The access and CSRF cookies travel with every API call. */
+/** The access cookie travels with every API call. */
 export const API_COOKIE_PATH = '/v1';
 /**
  * The refresh cookie is scoped to the one route that consumes it, so the
  * longest-lived credential is absent from ordinary requests.
  */
 export const REFRESH_COOKIE_PATH = '/v1/auth/refresh';
+/**
+ * The CSRF cookie is site-wide, unlike the two credentials above.
+ *
+ * It has to be: `document.cookie` exposes only cookies whose path is a prefix
+ * of the *document's* path, and the client that must echo this value is served
+ * from `/`, never from `/v1`. Scoping it to the API's path would make the
+ * readable half of a double-submit pair unreadable by the only code that needs
+ * it, which defeats the mechanism entirely.
+ *
+ * Widening it costs nothing. This value carries no authority on its own —
+ * presenting it without the httpOnly access cookie proves nothing — and its
+ * whole purpose is to be readable by the first-party client. The credentials
+ * keep their tight scoping, which is where the scoping is worth having.
+ */
+export const CSRF_COOKIE_PATH = '/';
 
 export type TokenTransport = 'body' | 'cookie';
 
@@ -119,7 +134,7 @@ export function setSessionCookies(
   response.cookie(CSRF_COOKIE, csrfToken, {
     ...base,
     httpOnly: false,
-    path: API_COOKIE_PATH,
+    path: CSRF_COOKIE_PATH,
     maxAge: refreshMaxAge,
   });
 }
@@ -138,7 +153,7 @@ export function clearSessionCookies(response: Response, config: CookieTransportC
 
   response.clearCookie(ACCESS_COOKIE, { ...base, path: API_COOKIE_PATH });
   response.clearCookie(REFRESH_COOKIE, { ...base, path: REFRESH_COOKIE_PATH });
-  response.clearCookie(CSRF_COOKIE, { ...base, httpOnly: false, path: API_COOKIE_PATH });
+  response.clearCookie(CSRF_COOKIE, { ...base, httpOnly: false, path: CSRF_COOKIE_PATH });
 }
 
 /**

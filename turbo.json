@@ -6,6 +6,13 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": [
+        "NEXT_PUBLIC_API_URL",
+        "EXPO_PUBLIC_API_URL",
+        "EXPO_PUBLIC_RP_ID",
+        "IOS_BUNDLE_ID",
+        "ANDROID_PACKAGE"
+      ],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "dev": {
@@ -21,6 +28,10 @@
     },
     "test": {
       "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "e2e": {
+      "cache": false,
       "outputs": []
     }
   }
