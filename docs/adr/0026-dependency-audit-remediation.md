@@ -51,3 +51,22 @@ Trade-offs / negative:
 - **Raise the gate to `--audit-level=critical`** — rejected outright: it turns a real control into a formality and would have hidden all fifteen highs rather than fixing any.
 - **Wait for upstream (`next`, Expo) to bump their pins** — rejected for this slice: the gate is blocking, the wait is unbounded, and Slice 8 is precisely the work that adds surface to these packages.
 - **Take the Dependabot majors already open** (react-native 0.79 → 0.86, drizzle-kit 0.30 → 0.31) — rejected: they are deliberately deferred, and none of the high advisories required them.
+
+## Addendum — 2026-08-06: pin moved to `5.0.9`
+
+`GHSA-rgw5-rvv9-x895` was published against `brace-expansion >=4.0.0 <5.0.9`: a
+second denial of service via unbounded intermediate arrays, bypassing the
+mitigation this ADR relied on. The `5.0.8` pin above therefore became vulnerable
+in place, on `main` as well as on the Slice 8 branch — the same advisory-drift
+pattern that prompted this ADR, not a regression introduced by client work.
+
+The decision is unchanged; only the version moved. The override and the
+`patchedDependencies` key are now `5.0.9`, and the patch was regenerated because
+the fix rewrote the expansion internals and the original hunks no longer applied.
+**The noisy-failure design worked exactly as intended:** `pnpm install` refused
+the stale patch rather than silently dropping the shim, which is what this ADR
+argued for when it chose an exact-version pin. The shim itself is byte-identical
+in effect — `5.0.9` exports the same `{ expand, EXPANSION_MAX,
+EXPANSION_MAX_LENGTH }` shape and still omits the callable default — and brace
+expansion was re-verified across all four `minimatch` versions in the tree
+(`@3.1.5`, `@5.1.9`, `@9.0.9`, `@10.2.5`) plus the ESM default-export path.
