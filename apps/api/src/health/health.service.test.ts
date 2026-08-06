@@ -3,8 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { loadEnv } from '../config/env';
 import { HealthService } from './health.service';
 
-// Parse through the schema so new env fields with defaults never break this test.
-const env = loadEnv({ NODE_ENV: 'test', LOG_LEVEL: 'error' });
+// Parse through the schema so new env fields with defaults never break this
+// test. Fields *without* a default must be listed: `ENCRYPTION_KEYS` has none
+// on purpose (ADR-0028), since a default would ship a published key.
+const env = loadEnv({
+  NODE_ENV: 'test',
+  LOG_LEVEL: 'error',
+  ENCRYPTION_KEYS: `test:${Buffer.alloc(32, 0).toString('base64')}`,
+});
 
 describe('HealthService', () => {
   it('reports ok with a lowercased service name', () => {

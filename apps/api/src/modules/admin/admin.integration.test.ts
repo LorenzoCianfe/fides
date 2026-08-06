@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, resetDb, type TestDatabase } from '../../../test/db';
 import { TEST_SCRYPT_PARAMS } from '../../../test/admin';
 import { TestClock } from '../../../test/clock';
+import { KeyringEncryption, isEncrypted, parseKeyring } from '../../shared/crypto/encryption';
 import { hashPassword } from '../../shared/crypto/password';
 import {
   DEFAULT_TOTP_CONFIG,
@@ -39,17 +40,35 @@ const SESSION_CONFIG: AdminSessionConfig = {
   absoluteTtlMs: 8 * 60 * 60 * 1000,
 };
 
+/** Matches the `ADMIN_LOCKOUT_*` env defaults (ADR-0029). */
+const DEFAULT_LOCKOUT_THRESHOLD = 5;
+const DEFAULT_LOCKOUT_DURATION_MS = 15 * 60 * 1000;
+
+const encryption = new KeyringEncryption(
+  parseKeyring(`test:${Buffer.alloc(32, 7).toString('base64')}`),
+);
+
 function identityService(overrides: Partial<AdminIdentityConfig> = {}): {
   identity: AdminIdentityService;
   sessions: AdminSessionService;
 } {
   const sessions = new AdminSessionService(db as TestDatabase, ids, clock, audit, SESSION_CONFIG);
-  const identity = new AdminIdentityService(db as TestDatabase, ids, clock, audit, sessions, {
-    issuer: 'Fides',
-    loginChallengeTtlMs: ADMIN_LOGIN_CHALLENGE_TTL_MS,
-    totp: DEFAULT_TOTP_CONFIG,
-    ...overrides,
-  });
+  const identity = new AdminIdentityService(
+    db as TestDatabase,
+    ids,
+    clock,
+    audit,
+    sessions,
+    encryption,
+    {
+      issuer: 'Fides',
+      loginChallengeTtlMs: ADMIN_LOGIN_CHALLENGE_TTL_MS,
+      totp: DEFAULT_TOTP_CONFIG,
+      lockoutThreshold: DEFAULT_LOCKOUT_THRESHOLD,
+      lockoutDurationMs: DEFAULT_LOCKOUT_DURATION_MS,
+      ...overrides,
+    },
+  );
   return { identity, sessions };
 }
 
@@ -503,5 +522,229 @@ describe('admin retention sweeper', () => {
 
     // The audit trail is never swept: the forensic record outlives the row.
     expect(await audit.verify()).toMatchObject({ ok: true });
+  });
+});
+
+describe('admin TOTP secrets at rest (ADR-0028)', () => {
+  beforeEach(async () => {
+    await insertAdmin({
+      id: SUPER_ID,
+      email: 'ops@fides.local',
+      role: 'super_admin',
+      password: PASSWORD,
+    });
+  });
+
+  it('stores the secret sealed, never as the base32 an authenticator would accept', async () => {
+    const { identity } = identityService();
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    const { secret } = await identity.beginMfaEnrolment(challenge.challengeToken);
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    // The whole point: a database read yields no usable second factor.
+    expect(admin!.totpSecret).not.toBe(secret);
+    expect(admin!.totpSecret).not.toContain(secret);
+    expect(isEncrypted(admin!.totpSecret!)).toBe(true);
+
+    // And it still verifies, so the sealing is transparent to the ceremony.
+    const session = await identity.verifyMfa(
+      challenge.challengeToken,
+      generateTotp(secret, clock.now().getTime()),
+    );
+    expect(session.token).toMatch(/^ast_/);
+  });
+
+  it('refuses a secret grafted onto another admin row', async () => {
+    // Encryption alone would not stop this — the copied ciphertext would
+    // decrypt fine. Binding the admin id as additional authenticated data is
+    // what makes an attacker with database write access unable to promote
+    // themselves by cloning a colleague's second factor.
+    const { identity } = identityService();
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    const { secret } = await identity.beginMfaEnrolment(challenge.challengeToken);
+    const [source] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+
+    await insertAdmin({
+      id: AGENT_ID,
+      email: 'agent@fides.local',
+      role: 'support_agent',
+      password: PASSWORD,
+    });
+    await db
+      .update(admins)
+      .set({ totpSecret: source!.totpSecret, totpEnrolledAt: clock.now() })
+      .where(eq(admins.id, AGENT_ID));
+
+    const agentChallenge = await identity.login('agent@fides.local', PASSWORD);
+    await expect(
+      identity.verifyMfa(
+        agentChallenge.challengeToken,
+        generateTotp(secret, clock.now().getTime()),
+      ),
+    ).rejects.toMatchObject({ code: 'INTERNAL_ERROR' });
+  });
+
+  it('still verifies a pre-ADR-0028 plaintext secret, and re-seals it in place', async () => {
+    // Rows written before this slice hold bare base32. They must keep working,
+    // and must not stay plaintext once they have proven themselves.
+    const { identity } = identityService();
+    const legacy = generateTotpSecret();
+    await db
+      .update(admins)
+      .set({ totpSecret: legacy, totpEnrolledAt: clock.now() })
+      .where(eq(admins.id, SUPER_ID));
+
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    const session = await identity.verifyMfa(
+      challenge.challengeToken,
+      generateTotp(legacy, clock.now().getTime()),
+    );
+    expect(session.token).toMatch(/^ast_/);
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(isEncrypted(admin!.totpSecret!)).toBe(true);
+    expect(admin!.totpSecret).not.toBe(legacy);
+  });
+
+  it('leaves a plaintext secret alone when the code was wrong', async () => {
+    // Re-sealing on read would re-encrypt on failed attempts too; it belongs on
+    // the one path that has just proven the plaintext is the real secret.
+    const { identity } = identityService();
+    const legacy = generateTotpSecret();
+    await db
+      .update(admins)
+      .set({ totpSecret: legacy, totpEnrolledAt: clock.now() })
+      .where(eq(admins.id, SUPER_ID));
+
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    await expect(identity.verifyMfa(challenge.challengeToken, '000000')).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(admin!.totpSecret).toBe(legacy);
+  });
+});
+
+describe('admin login lockout (ADR-0029)', () => {
+  beforeEach(async () => {
+    await insertAdmin({
+      id: SUPER_ID,
+      email: 'ops@fides.local',
+      role: 'super_admin',
+      password: PASSWORD,
+    });
+  });
+
+  async function failPassword(identity: AdminIdentityService, times: number): Promise<void> {
+    for (let attempt = 0; attempt < times; attempt++) {
+      await expect(identity.login('ops@fides.local', 'wrong-password')).rejects.toMatchObject({
+        code: 'UNAUTHENTICATED',
+      });
+    }
+  }
+
+  it('locks the account after the threshold, and then refuses the correct password', async () => {
+    const { identity } = identityService({ lockoutThreshold: 3 });
+    await failPassword(identity, 3);
+
+    // The credential is right; the account is not available. This is the whole
+    // control: throttling slows guessing, a lockout stops it.
+    await expect(identity.login('ops@fides.local', PASSWORD)).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(admin!.lockedUntil).not.toBeNull();
+  });
+
+  it('counts a rejected TOTP code, which no rollback may discard', async () => {
+    // The regression this exists for: `verifyMfa` rolls its transaction back so
+    // a typo does not spend the challenge. An increment written inside that
+    // transaction would roll back with it, and the second factor would be
+    // guessable forever.
+    const { identity } = identityService({ lockoutThreshold: 3 });
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    await identity.beginMfaEnrolment(challenge.challengeToken);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(identity.verifyMfa(challenge.challengeToken, '000000')).rejects.toMatchObject({
+        code: 'UNAUTHENTICATED',
+      });
+    }
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(admin!.lockedUntil).not.toBeNull();
+  });
+
+  it('releases the account once the lock expires', async () => {
+    const { identity } = identityService({ lockoutThreshold: 3, lockoutDurationMs: 60_000 });
+    await failPassword(identity, 3);
+    await expect(identity.login('ops@fides.local', PASSWORD)).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+
+    clock.advance(60_001);
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    expect(challenge.challengeToken).toMatch(/^alc_/);
+  });
+
+  it('clears the counter only when both factors have succeeded', async () => {
+    const { identity } = identityService({ lockoutThreshold: 5 });
+    await failPassword(identity, 3);
+
+    // A correct password alone must not reset it: an attacker who has the
+    // password could otherwise reset the counter at will and grind the code.
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    const [midway] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(midway!.failedLoginAttempts).toBe(3);
+
+    const { secret } = await identity.beginMfaEnrolment(challenge.challengeToken);
+    await identity.verifyMfa(challenge.challengeToken, generateTotp(secret, clock.now().getTime()));
+
+    const [after] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(after!.failedLoginAttempts).toBe(0);
+    expect(after!.lockedUntil).toBeNull();
+  });
+
+  it('audits every denial and the lock itself, on the tamper-evident chain', async () => {
+    const { identity } = identityService({ lockoutThreshold: 2 });
+    await failPassword(identity, 2);
+
+    const rows = await db.select().from(auditLog);
+    const denials = rows.filter((row) => row.action === AuditAction.AdminAuthDenied);
+    expect(denials).toHaveLength(2);
+    expect(denials[0]!.actorType).toBe('admin');
+    expect(denials[0]!.metadata).toMatchObject({ factor: 'password' });
+    expect(rows.filter((row) => row.action === AuditAction.AdminLocked)).toHaveLength(1);
+
+    // Written in their own transactions, outside any action — the chain must
+    // still be intact.
+    expect(await audit.verify()).toMatchObject({ ok: true });
+  });
+
+  it('records nothing for an unknown address', async () => {
+    // No admin to reference, and the address itself is PII the trail must not
+    // hold (ADR-0024). Unknown-address volume is the throttle's problem.
+    const { identity } = identityService({ lockoutThreshold: 2 });
+    await expect(identity.login('nobody@fides.local', PASSWORD)).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+    expect(await db.select().from(auditLog)).toHaveLength(0);
+  });
+
+  it('does not count a spent challenge against the operator', async () => {
+    // Otherwise anyone holding a dead token could lock an operator out.
+    const { identity } = identityService({ lockoutThreshold: 2 });
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    const { secret } = await identity.beginMfaEnrolment(challenge.challengeToken);
+    await identity.verifyMfa(challenge.challengeToken, generateTotp(secret, clock.now().getTime()));
+
+    await expect(identity.verifyMfa(challenge.challengeToken, '000000')).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(admin!.failedLoginAttempts).toBe(0);
   });
 });

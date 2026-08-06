@@ -9,6 +9,11 @@ import {
 import { randomBytes } from 'node:crypto';
 import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { Database } from '../../../database/db.types';
+import {
+  isEncrypted,
+  totpSecretContext,
+  type EncryptionPort,
+} from '../../../shared/crypto/encryption';
 import { hashPassword, verifyPassword } from '../../../shared/crypto/password';
 import { generateToken, sha256Hex } from '../../../shared/crypto/secrets';
 import {
@@ -66,7 +71,13 @@ export interface AdminIdentityConfig {
   readonly issuer: string;
   readonly loginChallengeTtlMs: number;
   readonly totp: TotpConfig;
+  /** Consecutive failures across both factors before the account locks. */
+  readonly lockoutThreshold: number;
+  readonly lockoutDurationMs: number;
 }
+
+/** Which factor rejected an attempt; recorded on the denial (ADR-0029). */
+export type AdminAuthFactor = 'password' | 'totp';
 
 export interface AdminLoginChallenge {
   readonly challengeToken: string;
@@ -106,8 +117,110 @@ export class AdminIdentityService {
     private readonly clock: EventClock,
     private readonly audit: AuditService,
     private readonly sessions: AdminSessionService,
+    private readonly encryption: EncryptionPort,
     private readonly config: AdminIdentityConfig,
   ) {}
+
+  /**
+   * Reject an attempt against a locked account (ADR-0029).
+   *
+   * The error is the same generic `Invalid credentials` every other failure
+   * raises: telling a caller "this account is locked" confirms the address
+   * exists and hands an attacker a progress signal, which would give back the
+   * enumeration resistance `login` goes out of its way to maintain.
+   */
+  private assertNotLocked(admin: Pick<AdminRow, 'lockedUntil'>, now: Date): void {
+    if (admin.lockedUntil && admin.lockedUntil > now) {
+      throw new AuthenticationError('Invalid credentials');
+    }
+  }
+
+  /**
+   * Count a failed attempt and record the denial, in a transaction of its own.
+   *
+   * Separate by necessity, not preference. ADR-0024 writes every audit record
+   * inside its action's transaction so neither can exist without the other; a
+   * denial has no such transaction — `verifyMfa` deliberately rolls its own back
+   * so a mistyped code does not also spend the login challenge, which would
+   * take an increment and an audit record down with it. So this runs afterwards,
+   * on its own, and is the documented exception to that rule.
+   *
+   * Never throws into the caller's failure path: an authentication rejection
+   * must reach the client even if recording it does not.
+   */
+  private async recordFailedAttempt(
+    adminId: string,
+    factor: AdminAuthFactor,
+    correlationId?: string,
+  ): Promise<void> {
+    const now = this.clock.now();
+    try {
+      await this.db.transaction(async (tx) => {
+        const [admin] = await tx
+          .select()
+          .from(admins)
+          .where(eq(admins.id, adminId))
+          .limit(1)
+          .for('update');
+        if (!admin) return;
+
+        const attempts = admin.failedLoginAttempts + 1;
+        const locking = attempts >= this.config.lockoutThreshold;
+        const lockedUntil = locking
+          ? new Date(now.getTime() + this.config.lockoutDurationMs)
+          : admin.lockedUntil;
+
+        await tx
+          .update(admins)
+          // Zeroed when locking: the lock itself is the penalty, and carrying
+          // the count past it would re-lock on the first failure afterwards.
+          .set({ failedLoginAttempts: locking ? 0 : attempts, lockedUntil, updatedAt: now })
+          .where(eq(admins.id, admin.id));
+
+        await this.audit.append(tx, {
+          actorType: 'admin',
+          actorId: admin.id,
+          action: AuditAction.AdminAuthDenied,
+          resourceType: AuditResource.Admin,
+          resourceId: admin.id,
+          correlationId: correlationId ?? null,
+          metadata: { factor, consecutiveFailures: attempts.toString() },
+        });
+
+        if (locking) {
+          await this.audit.append(tx, {
+            actorType: 'admin',
+            actorId: admin.id,
+            action: AuditAction.AdminLocked,
+            resourceType: AuditResource.Admin,
+            resourceId: admin.id,
+            before: { locked: false },
+            after: { locked: true, untilMs: lockedUntil!.getTime().toString() },
+            correlationId: correlationId ?? null,
+          });
+        }
+      });
+    } catch {
+      // Recording is best-effort by design. Losing a denial record is bad;
+      // turning a rejected login into a 500 — and telling the caller their
+      // attempt was interesting — would be worse.
+    }
+  }
+
+  /**
+   * The stored TOTP secret in usable form.
+   *
+   * Tolerates a bare base32 value because rows written before ADR-0028 hold
+   * plaintext. The envelope is self-describing, so the two are unambiguous.
+   * `verifyMfa` re-seals a plaintext row on its next successful verification,
+   * and this tolerance can be dropped once no such rows remain.
+   */
+  private readTotpSecret(admin: Pick<AdminRow, 'id' | 'totpSecret'>): string {
+    const stored = admin.totpSecret!;
+    return isEncrypted(stored)
+      ? this.encryption.decrypt(stored, totpSecretContext(admin.id))
+      : stored;
+  }
 
   /**
    * Create the first `super_admin` from configuration, and only when the table
@@ -157,7 +270,11 @@ export class AdminIdentityService {
    * uniform and constant-time across unknown, disabled, and wrong-password
    * admins, so the response distinguishes none of them.
    */
-  async login(email: string, password: string): Promise<AdminLoginChallenge> {
+  async login(
+    email: string,
+    password: string,
+    correlationId?: string,
+  ): Promise<AdminLoginChallenge> {
     const normalized = email.trim().toLowerCase();
     const [admin] = await this.db
       .select()
@@ -167,9 +284,16 @@ export class AdminIdentityService {
 
     if (!admin || admin.status === 'disabled') {
       await this.decoyVerify(password);
+      // Nothing is recorded for an unknown address: there is no admin to
+      // reference, and the address itself is PII the trail must not hold
+      // (ADR-0024). Volume from unknown addresses is the throttle's job.
       throw new AuthenticationError('Invalid credentials');
     }
+
+    this.assertNotLocked(admin, this.clock.now());
+
     if (!(await verifyPassword(password, admin.passwordHash))) {
+      await this.recordFailedAttempt(admin.id, 'password', correlationId);
       throw new AuthenticationError('Invalid credentials');
     }
 
@@ -228,7 +352,13 @@ export class AdminIdentityService {
       const secret = generateTotpSecret();
       await tx
         .update(admins)
-        .set({ totpSecret: secret, updatedAt: now })
+        // Sealed before it is stored (ADR-0028), bound to this admin's id, so a
+        // database read yields no usable second factor and a database write
+        // cannot move this secret onto another operator's row.
+        .set({
+          totpSecret: this.encryption.encrypt(secret, totpSecretContext(admin.id)),
+          updatedAt: now,
+        })
         .where(eq(admins.id, admin.id));
       await tx
         .update(adminLoginChallenges)
@@ -253,8 +383,10 @@ export class AdminIdentityService {
    * the session — all in one transaction.
    *
    * A wrong code rolls the whole transaction back, so the challenge survives a
-   * typo rather than forcing the password step again. The route is throttled,
-   * which is what bounds guessing against the 5-minute challenge window.
+   * typo rather than forcing the password step again. Throttling bounds guessing
+   * within the 5-minute challenge window; the ADR-0029 lockout bounds it across
+   * windows, and is counted *outside* this transaction precisely because the
+   * rollback that protects the challenge would otherwise discard the count.
    */
   async verifyMfa(
     challengeToken: string,
@@ -262,6 +394,46 @@ export class AdminIdentityService {
     correlationId?: string,
   ): Promise<IssuedAdminSession> {
     const now = this.clock.now();
+
+    // Resolved before the transaction so a rejected code can still be counted
+    // against the right admin once the transaction has rolled back. Advisory
+    // only — the authoritative consumption happens under lock below.
+    const [pending] = await this.db
+      .select({ adminId: adminLoginChallenges.adminId, lockedUntil: admins.lockedUntil })
+      .from(adminLoginChallenges)
+      .innerJoin(admins, eq(admins.id, adminLoginChallenges.adminId))
+      .where(
+        and(
+          eq(adminLoginChallenges.tokenHash, sha256Hex(challengeToken)),
+          isNull(adminLoginChallenges.consumedAt),
+          gt(adminLoginChallenges.expiresAt, now),
+        ),
+      )
+      .limit(1);
+    if (pending) this.assertNotLocked(pending, now);
+
+    let codeRejected = false;
+    try {
+      return await this.verifyMfaInTransaction(challengeToken, code, now, correlationId, () => {
+        codeRejected = true;
+      });
+    } finally {
+      // Only a rejected *code* counts. A stale or already-consumed challenge is
+      // not a guess at the second factor, and counting it would let anyone
+      // holding a spent token lock an operator out.
+      if (codeRejected && pending) {
+        await this.recordFailedAttempt(pending.adminId, 'totp', correlationId);
+      }
+    }
+  }
+
+  private async verifyMfaInTransaction(
+    challengeToken: string,
+    code: string,
+    now: Date,
+    correlationId: string | undefined,
+    onCodeRejected: () => void,
+  ): Promise<IssuedAdminSession> {
     return this.db.transaction(async (tx) => {
       const consumed = await tx
         .update(adminLoginChallenges)
@@ -293,22 +465,34 @@ export class AdminIdentityService {
         throw new AuthenticationError('A second factor must be enrolled before signing in');
       }
 
+      const secret = this.readTotpSecret(admin);
       const verification = verifyTotp(
-        admin.totpSecret,
+        secret,
         code,
         now.getTime(),
         this.config.totp,
         admin.lastTotpStep,
       );
-      if (!verification.valid) throw new AuthenticationError('Invalid verification code');
+      if (!verification.valid) {
+        onCodeRejected();
+        throw new AuthenticationError('Invalid verification code');
+      }
 
       const activating = admin.totpEnrolledAt === null;
+      // A pre-ADR-0028 row is re-sealed here, on the one path that has just
+      // proven the plaintext is the real secret. Doing it on read instead would
+      // re-encrypt on a *failed* attempt too, and doing it in a migration was
+      // impossible — SQL cannot reach the keyring.
+      const resealing = !isEncrypted(admin.totpSecret);
       await tx
         .update(admins)
         .set({
           lastTotpStep: verification.step,
           updatedAt: now,
           ...(activating ? { totpEnrolledAt: now } : {}),
+          ...(resealing
+            ? { totpSecret: this.encryption.encrypt(secret, totpSecretContext(admin.id)) }
+            : {}),
         })
         .where(eq(admins.id, admin.id));
 

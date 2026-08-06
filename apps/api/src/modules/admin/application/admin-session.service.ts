@@ -84,9 +84,14 @@ export class AdminSessionService {
       createdAt: now,
       lastUsedAt: now,
     });
+    // Both factors are satisfied, so this is the one place authentication
+    // completes — and therefore the only correct place to clear the ADR-0029
+    // lockout counter. Clearing it at the password step instead would let an
+    // attacker who knows the password reset the counter at will and grind the
+    // second factor indefinitely.
     await executor
       .update(admins)
-      .set({ lastLoginAt: now, updatedAt: now })
+      .set({ lastLoginAt: now, updatedAt: now, failedLoginAttempts: 0, lockedUntil: null })
       .where(eq(admins.id, adminId));
 
     await this.audit.append(executor, {

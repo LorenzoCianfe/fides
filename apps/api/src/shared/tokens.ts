@@ -11,3 +11,6 @@ export const CLOCK = Symbol('CLOCK');
 
 /** Outbound NotificationPort (console adapter in development). */
 export const NOTIFICATIONS = Symbol('NOTIFICATIONS');
+
+/** Field-level EncryptionPort (local keyring adapter; KMS-shaped, ADR-0028). */
+export const ENCRYPTION = Symbol('ENCRYPTION');
