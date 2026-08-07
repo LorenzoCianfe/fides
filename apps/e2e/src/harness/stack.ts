@@ -250,6 +250,13 @@ export async function startStack(): Promise<Stack> {
       // the requirement exists to prevent. A fixed all-zeros key here is
       // self-evidently not a secret.
       ENCRYPTION_KEYS: `e2e:${Buffer.alloc(32, 0).toString('base64')}`,
+      // Same requirement, same reasoning, for the audit anchor signing key
+      // (ADR-0031): required with no default so a deployment cannot appear to
+      // anchor the trail while publishing nothing. PKCS8-wrapped all-zeros seed.
+      AUDIT_ANCHOR_KEYS: `e2e:${Buffer.concat([
+        Buffer.from('302e020100300506032b657004220420', 'hex'),
+        Buffer.alloc(32, 0),
+      ]).toString('base64')}`,
     },
     'api',
   );

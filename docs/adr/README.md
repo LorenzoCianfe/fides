@@ -34,3 +34,4 @@ Each ADR captures one significant decision, its context, and its consequences. A
 | [0028](0028-field-level-encryption-totp-secrets.md) | Field-level encryption: a KMS-shaped keyring, applied first to admin TOTP secrets (refines 0010, 0025) | Accepted |
 | [0029](0029-admin-login-lockout-denied-attempt-audit.md) | Per-account admin lockout and auditing denied attempts (refines 0024, 0025) | Accepted |
 | [0030](0030-admin-credential-recovery.md) | Admin credential rotation and four-eyes second-factor reset (refines 0011, 0025, 0029) | Accepted |
+| [0031](0031-audit-tail-anchoring.md) | Audit tail anchoring by signed, published high-water marks (refines 0001, 0024, 0028) | Accepted |

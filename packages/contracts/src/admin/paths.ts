@@ -18,7 +18,13 @@ import {
   AdminStatusRequestSchema,
   AdminSummarySchema,
 } from './auth';
-import { AuditPageSchema, AuditQuerySchema, AuditVerificationSchema } from './audit';
+import {
+  AuditAnchorVerificationSchema,
+  AuditAnchorVerifyRequestSchema,
+  AuditPageSchema,
+  AuditQuerySchema,
+  AuditVerificationSchema,
+} from './audit';
 import {
   AdminCustomerDetailSchema,
   AdminCustomerPageSchema,
@@ -306,13 +312,30 @@ export function registerAdminPaths(registry: OpenAPIRegistry): void {
   registry.registerPath({
     method: 'get',
     path: '/v1/admin/audit/verify',
-    summary: 'Verify the audit hash chain',
+    summary: 'Verify the audit hash chain and its tail',
     description:
-      'Walks the whole chain from genesis, recomputing every hash and link, and reports the first break. Requires audit.read.',
+      'Walks the whole chain from genesis, recomputing every hash and link, and reports the first break — then checks the tail against the surviving signed anchors, because deleting the newest records leaves a shorter chain that verifies perfectly. Requires audit.read.',
     tags: [TAG_ADMIN_AUDIT],
     security: bearer,
     responses: {
       200: jsonResponse('Verification outcome', AuditVerificationSchema),
+      401: errorResponse('Not authenticated'),
+      403: errorResponse('Role lacks audit.read'),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/v1/admin/audit/verify-anchor',
+    summary: 'Verify the trail against an anchor held from the log archive',
+    description:
+      'Checks a published anchor — payload and signature, exactly as they appeared in the log line — against the trail as it stands now. This is the path that still answers when the anchor table has been deleted alongside the records it attested to, which is why anchors are signed asymmetrically rather than with an HMAC. Changes nothing; a POST only because the anchor is a payload that must not enter a URL or an access log. Requires audit.read.',
+    tags: [TAG_ADMIN_AUDIT],
+    security: bearer,
+    request: { body: jsonBody(AuditAnchorVerifyRequestSchema) },
+    responses: {
+      200: jsonResponse('Verification outcome', AuditAnchorVerificationSchema),
+      400: errorResponse('The payload is not a well-formed anchor'),
       401: errorResponse('Not authenticated'),
       403: errorResponse('Role lacks audit.read'),
     },

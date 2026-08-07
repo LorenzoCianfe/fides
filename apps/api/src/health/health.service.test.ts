@@ -4,12 +4,17 @@ import { loadEnv } from '../config/env';
 import { HealthService } from './health.service';
 
 // Parse through the schema so new env fields with defaults never break this
-// test. Fields *without* a default must be listed: `ENCRYPTION_KEYS` has none
-// on purpose (ADR-0028), since a default would ship a published key.
+// test. Fields *without* a default must be listed: `ENCRYPTION_KEYS` (ADR-0028)
+// and `AUDIT_ANCHOR_KEYS` (ADR-0031) have none on purpose, since a default would
+// ship a published key.
 const env = loadEnv({
   NODE_ENV: 'test',
   LOG_LEVEL: 'error',
   ENCRYPTION_KEYS: `test:${Buffer.alloc(32, 0).toString('base64')}`,
+  AUDIT_ANCHOR_KEYS: `test:${Buffer.concat([
+    Buffer.from('302e020100300506032b657004220420', 'hex'),
+    Buffer.alloc(32, 0),
+  ]).toString('base64')}`,
 });
 
 describe('HealthService', () => {

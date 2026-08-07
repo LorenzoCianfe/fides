@@ -26,8 +26,8 @@ LorenzoCianfe alone.
 | 9 | Dependency hygiene | Done — [#34](https://github.com/LorenzoCianfe/fides/pull/34) |
 | 10 A | TOTP secret encryption, lockout, denied-attempt audit | Done — [#35](https://github.com/LorenzoCianfe/fides/pull/35) |
 | 10 B | Admin password rotation and four-eyes TOTP reset | Done — [#37](https://github.com/LorenzoCianfe/fides/pull/37) |
-| **11** | **Audit tail-truncation anchoring** | **Next** |
-| 12 | Five missing E2E cases + automated accessibility gate | Pending |
+| 11 | Audit tail-truncation anchoring | Done — ADR-0031 |
+| **12** | **Five missing E2E cases + automated accessibility gate** | **Next** |
 
 Confirm the state before starting:
 
@@ -35,11 +35,11 @@ Confirm the state before starting:
 git fetch origin && git log --oneline origin/main -6
 ```
 
-You should see the merge of #37 at the top. Branch from an up-to-date `main` —
-one feature branch and one PR per slice, conventional commits, because CI and
-CodeQL only run on `main` pushes and PRs targeting `main`.
+Branch from an up-to-date `main` — one feature branch and one PR per slice,
+conventional commits, because CI and CodeQL only run on `main` pushes and PRs
+targeting `main`.
 
-**Next free ADR number is 0031.**
+**Next free ADR number is 0032.**
 
 ### What Slice 9 changed (#34)
 
@@ -138,18 +138,36 @@ are one problem.
   disable-and-recreate. Revisit when the back office has a notification channel, or
   when WebAuthn replaces the admin password.
 
+### What Slice 11 changed (ADR-0031)
+
+**Audit tail anchoring**, closing the deferral ADR-0024 wrote against itself.
+Migration `0013` adds `audit_anchors`; new settings `AUDIT_ANCHOR_KEYS`
+(**required, no default**) and `AUDIT_ANCHOR_INTERVAL_MS` (default 5 min).
+
+- The chain head's `(seq, hash)` is signed on an interval and **emitted to the
+  process log**, with a copy in `audit_anchors`.
+- **The published line is the control; the table is convenience.** Do not lose
+  this distinction — whoever can truncate `audit_log` deletes the anchor rows in
+  the same transaction, while a shipped log line cannot be unpublished. The table
+  buys automatic detection on every `verify()`, and is not the guarantee.
+- **Signing is Ed25519 via a new `SigningPort` (token `SIGNING`), not an HMAC.**
+  Anyone able to verify an HMAC can forge one, which forces every verifier inside
+  the signer's trust boundary — the opposite of what an anchor is for. KMS-shaped
+  like `EncryptionPort`, so an HSM adapter drops in. The public verification key
+  is logged at startup so it can be pinned out of band.
+- `GET /v1/admin/audit/verify` now returns `tail` beside the chain result, with
+  `ok` their conjunction. **`unanchored` is deliberately not a failure**: a fresh
+  system and one whose anchors were all deleted are indistinguishable from inside
+  the database, so it reports "no claim checked".
+- `POST /v1/admin/audit/verify-anchor` checks the trail against an anchor held
+  from a log archive — the path that still answers after the table is deleted.
+- **Residual:** defends the database, not a host holding the signing key (same
+  boundary as ADR-0028); the truncation window is the publish interval; and log
+  retention is now a security control rather than an operational convenience.
+
 ## Your task, in order
 
-### 1. Slice 11 — audit tail anchoring
-
-Closes the ADR-0024 deferral. The hash chain proves no record was altered or
-removed from the *middle*, but deleting the most recent N records leaves a
-still-valid chain. Needs an external high-water anchor: periodic publication of
-the head hash and sequence, plus verification against it. Decide where the anchor
-lives (a separate table is not enough on its own — an attacker with database
-access can truncate both).
-
-### 2. Slice 12 — verification breadth
+### 1. Slice 12 — verification breadth
 
 - **Five missing E2E cases**, all agreed: idempotency replay (the same key
   returning the original result rather than paying twice), refresh reuse detection
@@ -160,7 +178,7 @@ access can truncate both).
   path that honours `design.md`'s "not a later pass" without pulling Phase 7
   forward.
 
-### 3. Then Phase 2 — Payments & cards, admin UI first
+### 2. Then Phase 2 — Payments & cards, admin UI first
 
 Per `roadmap.md` and the standing decision that the admin UI comes early:
 
@@ -247,11 +265,13 @@ path; no accessibility pass has been run on either client.
 - Turbo root scripts work (`pnpm lint`, `typecheck`, `test`, `build`).
 - **`pnpm test` and the E2E suite need Docker Desktop running**
   (`C:\Program Files\Docker\Docker\Docker Desktop.exe`, ~1 minute to be ready).
-- **`ENCRYPTION_KEYS` is now required** — the API will not boot without it. Tests
-  get it from `apps/api/test/setup-env.ts` (wired into vitest `setupFiles`); the
-  E2E harness sets it in `apps/e2e/src/harness/stack.ts`; `.env.example` documents
-  the format and how to generate a key. Any *new* place that boots the API needs
-  it too.
+- **Two keys are now required and the API will not boot without either** —
+  `ENCRYPTION_KEYS` (ADR-0028) and `AUDIT_ANCHOR_KEYS` (ADR-0031, base64 PKCS8
+  Ed25519). Tests get both from `apps/api/test/setup-env.ts` (wired into vitest
+  `setupFiles`); the E2E harness sets them in `apps/e2e/src/harness/stack.ts`;
+  `health.service.test.ts` passes them explicitly because it calls `loadEnv()`
+  with a literal object; `.env.example` documents both formats and how to
+  generate each. **Any *new* place that boots the API needs them too.**
 - Long commit messages: write to a scratchpad file, then `git commit -F <file>`.
 - `pnpm patch` / `pnpm patch-commit` must be run **from the Bash tool** —
   `patch-commit` rejected the path when invoked from PowerShell.
@@ -283,6 +303,28 @@ path; no accessibility pass has been run on either client.
   password.
 
 ## Traps found the hard way
+
+**From Slice 11:**
+
+- **A TOTP test that mints a code for "now" and expects it to be rejected as a
+  replay is a race, and it fails open.** One in roughly four full runs went red
+  this way: if the wall clock crosses a 30-second step between the sign-in and
+  the assertion, the "replayed" code is a genuinely *newer* step and is correctly
+  accepted. Assert replay by spending a code you hold and then re-sending **that
+  exact code** — never by regenerating one and assuming the step has not moved.
+
+- **A drizzle error hides the database's own message.** Asserting on an
+  append-only trigger with `rejects.toThrow(/append-only violation/)` fails —
+  the outer error is `Failed query: …` and the trigger's text is down the
+  `cause` chain. Flatten it, as `audit.integration.test.ts` already does.
+- **Testing truncation means disabling the trigger**
+  (`ALTER TABLE audit_log DISABLE TRIGGER audit_log_append_only`), which is
+  correct rather than a cheat: the threat model assumes someone who can already
+  bypass the database's guards. If truncation needed no such privilege, the chain
+  would have caught it.
+- **`AuditAnchorService` takes an injected sink rather than importing a logger**,
+  because every application service in this codebase is framework-free (only
+  guards import `@nestjs/common`). The Nest `Logger` is bound in `audit.module.ts`.
 
 **From Slice 10 Wave B:**
 

@@ -4,7 +4,7 @@
 |---|---|
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) and its remediation |
 | Branch | Everything through Slice 10 Wave A is **merged to `main`**. Slices 1–7 via [PR #21](https://github.com/LorenzoCianfe/fides/pull/21), Slice 8 via [#30](https://github.com/LorenzoCianfe/fides/pull/30), Slice 9 via [#34](https://github.com/LorenzoCianfe/fides/pull/34), Slice 10 Wave A via [#35](https://github.com/LorenzoCianfe/fides/pull/35). **Slice 10 Wave B is open as [#37](https://github.com/LorenzoCianfe/fides/pull/37)** |
-| Verified | `apps/api` 309/309 tests green; lint and typecheck 16/16; forced uncached build 7/7; Playwright journey green; dependency audit exits 0 with **zero** high-severity findings |
+| Verified | `apps/api` 341/341 tests green; lint and typecheck 16/16; forced uncached build 7/7; Playwright journey green; dependency audit exits 0 with **zero** high-severity findings |
 | Last updated | 2026-08-07 |
 
 > **Phase 1 is COMPLETE, and its remediation is under way.** All eight build slices are done. Of the four agreed remediation slices, **9 (dependency hygiene), 10 Wave A (admin credential hardening), and 10 Wave B (admin credential recovery) have landed**; 11 and 12 remain.
@@ -17,8 +17,8 @@
 | 9 | Dependency hygiene — retire the last audit suppression, correct the `brace-expansion` exit condition | **Done** (#34) |
 | 10 A | TOTP secret encryption (ADR-0028), per-account lockout + denied-attempt audit (ADR-0029) | **Done** (#35) |
 | 10 B | Admin password rotation and four-eyes TOTP reset (ADR-0030) | **Done** ([#37](https://github.com/LorenzoCianfe/fides/pull/37)) |
-| 11 | Audit tail-truncation anchoring (closes the ADR-0024 deferral) | Next |
-| 12 | Five missing E2E cases + an automated accessibility gate | Pending |
+| 11 | Audit tail-truncation anchoring (closes the ADR-0024 deferral, ADR-0031) | **Done** |
+| 12 | Five missing E2E cases + an automated accessibility gate | Next |
 
 <details>
 <summary>Historical resume point (superseded)</summary>
@@ -232,4 +232,5 @@ Manual smoke: `pnpm stack:up`, set `.env`, run `corepack pnpm --filter @fides/ap
 - WebAuthn **server-issued options schemas** in contracts are documentation-shaped (responses are not runtime-validated); client-submitted payloads are validated with `.passthrough()`.
 - **Account provisioning is asynchronous:** a just-approved user has no account until the outbox dispatcher runs (`GET /v1/accounts` returns an empty list until then, never an error). With `SCHEDULERS_ENABLED=false` (the HTTP test topology), drive it explicitly via `app.get(OutboxDispatcher).dispatchPending()`.
 - The `GET /v1/accounts/:accountId` route returns **403** (not 404) for an account owned by another user — a deliberate, minor existence oracle kept for consistency with `assertResourceOwnership`; account ids are non-enumerable UUID v7 (ADR-0022).
-- **Audit trail (ADR-0024):** the chain detects any modification or removal of a non-tail record, but not deletion of the **tail** (truncation) — that needs an external high-water anchor, deferred beyond Phase 1. Denied/failed sensitive attempts are not recorded (a denial rolls its transaction back; a tamper-evident denial log is a separate out-of-band concern). The read/verify surface arrived in Slice 7 (`GET /v1/admin/audit`, `/verify`, behind `audit.read`). The system, outbox-driven provisioning record carries a null correlation id (the dispatcher passes only the payload), traced instead by `userId` + KYC reference.
+- ~~**Audit trail (ADR-0024):** the chain does not detect deletion of the **tail** (truncation)~~ — **closed 2026-08-07 (ADR-0031, Slice 11).** The head's `(seq, hash)` is signed on an interval and **published to the process log**, with a copy in `audit_anchors` (migration `0013`). **The published line is the control; the table is convenience** — whoever can truncate the trail deletes the rows in the same transaction, while a shipped log line cannot be unpublished. Signing is Ed25519 through a KMS-shaped `SigningPort`, not an HMAC, because anyone who can verify an HMAC can forge one and an anchor must be checkable by someone who has stopped trusting this system; the verification key is public and logged at startup. `GET /v1/admin/audit/verify` reports chain and tail separately with `ok` as their conjunction; `unanchored` is a deliberate non-failure (a fresh system and one whose anchors were deleted are indistinguishable from inside the database); `POST /v1/admin/audit/verify-anchor` verifies against an anchor held from a log archive. **Residual:** defends the database, not a host holding the signing key; the truncation window is the publish interval; and log retention is now a security control.
+- **Audit trail (ADR-0024):** the chain still detects any modification or removal of a non-tail record. Denied/failed sensitive attempts are not recorded (a denial rolls its transaction back; a tamper-evident denial log is a separate out-of-band concern). The read/verify surface arrived in Slice 7 (`GET /v1/admin/audit`, `/verify`, behind `audit.read`). The system, outbox-driven provisioning record carries a null correlation id (the dispatcher passes only the payload), traced instead by `userId` + KYC reference.

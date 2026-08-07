@@ -92,6 +92,13 @@
       "when": 1786011777106,
       "tag": "0012_admin_lockout",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786091963192,
+      "tag": "0013_audit_anchors",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,7 @@ import type { Database } from '../database/db.types';
 import { AccountsModule } from '../modules/accounts/accounts.module';
 import { AccountProvisioningService } from '../modules/accounts/application/account-provisioning.service';
 import { AdminModule } from '../modules/admin/admin.module';
+import { AuditModule } from '../modules/audit/audit.module';
 import { IdentitySweeper } from '../modules/identity/application/identity-sweeper';
 import { KYC_APPROVED_EVENT, type KycApprovedPayload } from '../modules/kyc/application/kyc-events';
 import {
@@ -25,7 +26,7 @@ import { OperationsScheduler } from './operations.scheduler';
  * env-tunable intervals.
  */
 @Module({
-  imports: [ScheduleModule.forRoot(), LedgerModule, AccountsModule, AdminModule],
+  imports: [ScheduleModule.forRoot(), LedgerModule, AccountsModule, AdminModule, AuditModule],
   providers: [
     {
       provide: OutboxDispatcher,
