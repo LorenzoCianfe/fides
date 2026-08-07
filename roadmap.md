@@ -77,7 +77,7 @@ Four slices close gaps the build slices recorded rather than solved. They run be
 | 9 | Dependency hygiene: retire the last audit suppression; correct the `brace-expansion` exit condition | Done — ADR-0026 addenda |
 | 10 A | Encrypt admin TOTP secrets; per-account lockout; audit denied attempts | Done — ADR-0028, ADR-0029 |
 | 10 B | Admin password rotation; four-eyes second-factor reset | Done — ADR-0030 |
-| 11 | Audit tail-truncation anchoring, closing the ADR-0024 deferral | Pending |
+| 11 | Audit tail-truncation anchoring, closing the ADR-0024 deferral | Done — ADR-0031 |
 | 12 | Five missing end-to-end cases; an automated accessibility gate on every PR | Pending |
 
 Slice 12's automated gate (`axe-core` in the Playwright suite, enforcing contrast, labels, roles, and landmarks) is deliberately **not** the WCAG 2.2 AA audit below: that stays in Phase 7. It is the middle path that honours `design.md`'s "accessibility is not a later pass" without pulling a manual audit forward.

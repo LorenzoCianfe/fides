@@ -115,17 +115,18 @@ and configuration are covered by tests; the ceremony itself is not, and cannot
 be from a runner. What follows is the sequence to close that, in order, with
 what "passed" looks like at each step so a partial result is still useful.
 
-**Before starting.** Since ADR-0028 the API refuses to boot without
-`ENCRYPTION_KEYS`. Set it alongside the variables above, or the first symptom
+**Before starting.** The API refuses to boot without two keys — `ENCRYPTION_KEYS`
+(ADR-0028) and `AUDIT_ANCHOR_KEYS` (ADR-0031). Both are deliberately
+default-less, so set them alongside the variables above, or the first symptom
 will be a server that never starts rather than anything to do with passkeys:
 
 ```bash
-node -e "console.log('dev:' + require('crypto').randomBytes(32).toString('base64'))"
+node -e "console.log('ENCRYPTION_KEYS=dev:' + require('crypto').randomBytes(32).toString('base64'));console.log('AUDIT_ANCHOR_KEYS=dev:' + require('crypto').generateKeyPairSync('ed25519').privateKey.export({format:'der',type:'pkcs8'}).toString('base64'))"
 ```
 
 | # | Step | Passed when |
 |---|---|---|
-| 1 | Start the API with `ENCRYPTION_KEYS` set and a named tunnel in front of it | `curl https://<host>/v1/health` returns `ok` over HTTPS |
+| 1 | Start the API with both keys set and a named tunnel in front of it | `curl https://<host>/v1/health` returns `ok` over HTTPS |
 | 2 | Set `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, and the app identifiers; restart | `curl https://<host>/.well-known/apple-app-site-association` returns JSON, not 404 |
 | 3 | Same for Android | `curl https://<host>/.well-known/assetlinks.json` lists the fingerprint of the certificate that will actually sign the build |
 | 4 | Build a **development build** against the same hostname (`expo run:ios` / `run:android`) | The app launches and its sign-in screen reports the domain it was built against |
