@@ -2,13 +2,23 @@
 
 | Field | Value |
 |---|---|
-| Document | State snapshot and continuation guide for Phase 1 (walking skeleton) |
-| Branch | Slices 1–7 **merged to `main`** via [PR #21](https://github.com/LorenzoCianfe/fides/pull/21) at the end of Slice 7 (see §6); Slice 8 branches from `main` |
-| Verified | `apps/api` 260/260 tests green; lint, typecheck, and production build clean across every package; dependency audit gate green (ADR-0026) |
+| Document | State snapshot and continuation guide for Phase 1 (walking skeleton) and its remediation |
+| Branch | Everything through Slice 10 Wave A is **merged to `main`**. Slices 1–7 via [PR #21](https://github.com/LorenzoCianfe/fides/pull/21), Slice 8 via [#30](https://github.com/LorenzoCianfe/fides/pull/30), Slice 9 via [#34](https://github.com/LorenzoCianfe/fides/pull/34), Slice 10 Wave A via [#35](https://github.com/LorenzoCianfe/fides/pull/35) |
+| Verified | `apps/api` 288/288 tests green; lint and typecheck 16/16; forced uncached build 7/7; Playwright journey green; dependency audit exits 0 with **zero** high-severity findings |
 | Last updated | 2026-08-06 |
 
-> **Phase 1 is COMPLETE.** All eight slices are done; Slice 8 landed via [PR #30](https://github.com/LorenzoCianfe/fides/pull/30).
-> **Start the next session from [`next-session-prompt.md`](next-session-prompt.md)**, which carries the agreed order of work — clear the Phase 1 debt first (§8 below), then Phase 2 with the admin UI early — along with the corrected environment notes and the traps Slice 8 surfaced. The rest of this document remains the detailed record of how Phase 1 was built.
+> **Phase 1 is COMPLETE, and its remediation is under way.** All eight build slices are done. Of the four agreed remediation slices, **9 (dependency hygiene) and 10 Wave A (admin credential hardening) have landed**; 10 Wave B, 11, and 12 remain.
+> **Start the next session from [`next-session-prompt.md`](next-session-prompt.md)**, which carries the current state, the remaining work in order, and the traps found so far. The rest of this document remains the detailed record of how Phase 1 was built, with §8 as the live gap register.
+
+### Remediation status
+
+| Slice | Scope | Status |
+|---|---|---|
+| 9 | Dependency hygiene — retire the last audit suppression, correct the `brace-expansion` exit condition | **Done** (#34) |
+| 10 A | TOTP secret encryption (ADR-0028), per-account lockout + denied-attempt audit (ADR-0029) | **Done** (#35) |
+| 10 B | Admin password change and TOTP reset, the reset behind four-eyes | Next |
+| 11 | Audit tail-truncation anchoring (closes the ADR-0024 deferral) | Pending |
+| 12 | Five missing E2E cases + an automated accessibility gate | Pending |
 
 <details>
 <summary>Historical resume point (superseded)</summary>
