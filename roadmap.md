@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Document | Product and engineering roadmap |
-| Version | 0.1.0 |
-| Status | Draft — discovery complete |
+| Version | 0.2.0 |
+| Status | Living — Phases 0 and 1 complete; Phase 1 remediation in progress |
 | Delivery model | Solo + Claude Code, phased |
-| Last updated | 2026-07-04 |
+| Last updated | 2026-08-07 |
 
 ---
 
@@ -65,6 +65,22 @@ Principles:
 - Admin: read-only user/account and ledger views.
 
 **Exit criteria.** A transfer moves value between two users with a balanced journal entry; balances reconcile; the flow is covered by integration and ledger-invariant tests; the action appears in the audit trail.
+
+**Status: complete** (2026-08-06), across eight build slices. The exit criteria are proven end to end by the Playwright suite, which drives the built API and web client through real WebAuthn ceremonies and the SCA-gated transfer.
+
+#### Phase 1 remediation
+
+Four slices close gaps the build slices recorded rather than solved. They run before Phase 2 because each is a correctness or security debt against work already merged, and none of them grows in value by waiting. Slice-level detail lives in [docs/phase-1-handoff.md](docs/phase-1-handoff.md).
+
+| Slice | Scope | Status |
+|---|---|---|
+| 9 | Dependency hygiene: retire the last audit suppression; correct the `brace-expansion` exit condition | Done — ADR-0026 addenda |
+| 10 A | Encrypt admin TOTP secrets; per-account lockout; audit denied attempts | Done — ADR-0028, ADR-0029 |
+| 10 B | Admin password rotation; four-eyes second-factor reset | Done — ADR-0030 |
+| 11 | Audit tail-truncation anchoring, closing the ADR-0024 deferral | Pending |
+| 12 | Five missing end-to-end cases; an automated accessibility gate on every PR | Pending |
+
+Slice 12's automated gate (`axe-core` in the Playwright suite, enforcing contrast, labels, roles, and landmarks) is deliberately **not** the WCAG 2.2 AA audit below: that stays in Phase 7. It is the middle path that honours `design.md`'s "accessibility is not a later pass" without pulling a manual audit forward.
 
 ### Phase 2 — Payments & cards
 
@@ -160,4 +176,5 @@ Business/KYB accounts; credit/charge cards and lending; real securities/MiFID II
 
 | Version | Date | Change |
 |---|---|---|
+| 0.2.0 | 2026-08-07 | Records delivery against the plan for the first time. Phases 0 and 1 are complete; Phase 1 gained a **remediation track** (Slices 9–12) that runs before Phase 2, because each of its items is a security or correctness debt against merged work and none improves by waiting. Slices 9, 10 A, and 10 B are done. Notes that Slice 12's automated accessibility gate is not the Phase 7 WCAG 2.2 AA audit and does not replace it. |
 | 0.1.0 | 2026-07-04 | Initial roadmap; phases 0–7 defined with objectives and exit criteria. |
