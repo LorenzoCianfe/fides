@@ -70,3 +70,51 @@ in effect — `5.0.9` exports the same `{ expand, EXPANSION_MAX,
 EXPANSION_MAX_LENGTH }` shape and still omits the callable default — and brace
 expansion was re-verified across all four `minimatch` versions in the tree
 (`@3.1.5`, `@5.1.9`, `@9.0.9`, `@10.2.5`) plus the ESM default-export path.
+
+## Addendum — 2026-08-06: the `lodash` suppression is retired; the patch exit condition was misattributed
+
+Two corrections, both found by re-checking claims this ADR made rather than by
+any change in the code.
+
+**`lodash >= 4.18.0` now exists, so the sole suppression is gone.** The decision
+above kept `GHSA-r5fr-rjxr-66jc` in `ignoreGhsas` because "its declared patch
+target does not exist: there is nothing to upgrade to". That was true when
+written and is no longer: `lodash@4.18.0` was published on 2026-03-31 and
+`4.18.1` on 2026-04-01. The advisory is now closed the way this ADR prefers —
+by moving the code that actually runs — with a range-scoped override
+(`"lodash@<4.18.0": ">=4.18.0"`) in the established style, and
+`pnpm.auditConfig` has been removed entirely.
+
+The upgrade was verified before it was taken rather than after. `@nestjs/swagger`
+imports the whole module but uses thirty ordinary utilities
+(`assign`, `cloneDeep`, `merge`, `omitBy`, `pickBy`, `unionWith`, and so on) and
+**never calls `_.template`**, which is the vulnerable function; all thirty are
+still exported by `4.18.1`, and `_.template` itself survives, so the fix hardened
+it rather than removing it. This mattered: the usual way to close a template
+injection advisory is to delete the API, which would have broken any consumer
+that used it, and "the patch target exists" is not on its own a reason to take
+it.
+
+The gate now reports **zero high-severity advisories** and still exits zero.
+That removes the trap recorded in the trade-offs above — the headline count and
+the exit status finally agree, and `pnpm audit` carries no exceptions at all.
+The warning stands as a matter of policy for whatever is suppressed next, but
+nothing is suppressed today. Closing the advisory also cleared two moderates
+that entered on the same line, taking the total from fourteen findings to
+eleven.
+
+**The `brace-expansion` patch is waiting on React Native, not on Expo.** The
+trade-off above names its exit condition as "the Expo toolchain stops pulling
+`glob@7`/`rimraf@3`". Tracing the tree shows that is now the wrong target: every
+`@expo/*` package resolves `glob@13`, and the whole of the `glob@7.2.3` and
+`rimraf@3.0.2` surface enters through **`react-native@0.79.7`** — directly as
+its own dependency, and again via `@react-native/codegen`,
+`@react-native/community-cli-plugin` → `@react-native/dev-middleware` →
+`chromium-edge-launcher` → `rimraf@3`, and `babel-jest` → `test-exclude@6`.
+Those are what pin the `minimatch@3` the shim exists for.
+
+The practical consequence is that the patch is not independently clearable. Its
+exit condition is the React Native major, which is the Expo SDK move, which is
+the same work as the open [PR #26](https://github.com/LorenzoCianfe/fides/pull/26)
+and belongs to Phase 7. It should be retired as part of that move and not
+attempted before it.
