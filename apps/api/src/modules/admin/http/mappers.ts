@@ -135,7 +135,7 @@ export function toAuditPageDto(page: AuditPage): AuditPageDto {
 export function toPendingActionDto(action: PendingActionView): PendingActionDto {
   return {
     id: action.id,
-    type: action.type,
+    type: action.type as PendingActionDto['type'],
     status: action.status,
     payload: action.payload,
     makerId: action.makerId,

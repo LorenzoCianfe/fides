@@ -25,8 +25,8 @@ LorenzoCianfe alone.
 | 1–8 | The whole walking skeleton: ledger, identity, accounts, transfer, audit, admin, clients, E2E | Done |
 | 9 | Dependency hygiene | Done — [#34](https://github.com/LorenzoCianfe/fides/pull/34) |
 | 10 A | TOTP secret encryption, lockout, denied-attempt audit | Done — [#35](https://github.com/LorenzoCianfe/fides/pull/35) |
-| **10 B** | **Admin password change and TOTP reset** | **Next** |
-| 11 | Audit tail-truncation anchoring | Pending |
+| 10 B | Admin password rotation and four-eyes TOTP reset | Done — [#37](https://github.com/LorenzoCianfe/fides/pull/37) |
+| **11** | **Audit tail-truncation anchoring** | **Next** |
 | 12 | Five missing E2E cases + automated accessibility gate | Pending |
 
 Confirm the state before starting:
@@ -35,11 +35,11 @@ Confirm the state before starting:
 git fetch origin && git log --oneline origin/main -6
 ```
 
-You should see the merges of #35 and #34 at the top. Branch from an up-to-date
-`main` — one feature branch and one PR per slice, conventional commits, because
-CI and CodeQL only run on `main` pushes and PRs targeting `main`.
+You should see the merge of #37 at the top. Branch from an up-to-date `main` —
+one feature branch and one PR per slice, conventional commits, because CI and
+CodeQL only run on `main` pushes and PRs targeting `main`.
 
-**Next free ADR number is 0030.**
+**Next free ADR number is 0031.**
 
 ### What Slice 9 changed (#34)
 
@@ -100,23 +100,47 @@ are one problem.
   to reference and is PII an un-erasable trail must not hold.
 - Migration `0012` adds `failed_login_attempts` and `locked_until`.
 
+### What Slice 10 Wave B changed (#37)
+
+**ADR-0030 — credential rotation and recovery.** No migration and no new settings.
+
+- **`POST /v1/admin/me/password`** rotates an operator's own password, behind
+  authentication and **no permission** — rotating your own credential is not a
+  capability the matrix may withhold. It re-proves **both** factors.
+- **The rotation code advances the same replay guard sign-in advances**, so a code
+  cannot be spent twice. Practical consequence for tests and for operators: a code
+  just used to sign in is rejected until the next 30-second step. This is why the
+  HTTP tests generate codes at `Date.now() + 30_000` — see the traps section.
+- A rotation **revokes every other session** the operator holds and spares the
+  calling one. Failures count against the ADR-0029 lockout and are audited with
+  `operation: password_change`; success clears the counter, which is the second and
+  only other place both factors are satisfied.
+- **`admin_totp_reset` is the second `pending_admin_actions` type**, and the
+  generic table took it **without a migration**. Maker half is
+  `compliance_officer` alone — narrower than funding's, because funding credits a
+  customer within a cap while a reset hands over a back-office identity. Checker is
+  `super_admin`, again denied the maker half. Both halves are in
+  `SEGREGATED_PERMISSION_PAIRS`, so the invariant test covers the pair for free.
+- Approval clears the secret, `totpEnrolledAt`, `lastTotpStep`, and the lockout,
+  and revokes the target's sessions, in the deciding transaction. **The checker may
+  never be the target** — `checkerId != makerId` governs who decides, not who is
+  targeted, so that needed its own rule.
+- **Decisions are now type-scoped routes:**
+  `/v1/admin/funding-requests/{id}/approve|reject` and
+  `/v1/admin/totp-resets/{id}/approve|reject`. `/v1/admin/pending-actions` remains
+  the unified read. The permission a decision needs depends on the row's type,
+  which a route annotation cannot know; the generic alternative would have hidden
+  the decisive check inside a service. Each decision re-asserts the type under the
+  row lock, because `super_admin` holds **both** checker halves.
+- **Deferred with a reason:** an admin-initiated *password* reset. Phase 1 has no
+  out-of-band channel for admins, so the checker would necessarily learn a working
+  credential for another operator. Forgotten passwords still end at
+  disable-and-recreate. Revisit when the back office has a notification channel, or
+  when WebAuthn replaces the admin password.
+
 ## Your task, in order
 
-### 1. Slice 10 Wave B — admin credential recovery
-
-The remaining ADR-0025 gap: **no admin password rotation, no self-service password
-change, no TOTP reset.** A compromised or lost admin factor has no recovery path
-short of a direct database edit. Suggested shape, to be confirmed by discovery:
-
-- Self-service password change for the authenticated admin (requires the current
-  password; consider requiring a fresh TOTP code as well).
-- TOTP reset **behind four-eyes** — the `pending_admin_actions` table is already
-  generic with one registered type, and this is the natural second type. A reset
-  is a second-factor bypass by definition, so it should not be unilateral.
-- Consider whether a password change should revoke the admin's other sessions.
-- New audit actions; new permissions in the matrix; watch the SoD invariant test.
-
-### 2. Slice 11 — audit tail anchoring
+### 1. Slice 11 — audit tail anchoring
 
 Closes the ADR-0024 deferral. The hash chain proves no record was altered or
 removed from the *middle*, but deleting the most recent N records leaves a
@@ -125,7 +149,7 @@ the head hash and sequence, plus verification against it. Decide where the ancho
 lives (a separate table is not enough on its own — an attacker with database
 access can truncate both).
 
-### 3. Slice 12 — verification breadth
+### 2. Slice 12 — verification breadth
 
 - **Five missing E2E cases**, all agreed: idempotency replay (the same key
   returning the original result rather than paying twice), refresh reuse detection
@@ -136,15 +160,18 @@ access can truncate both).
   path that honours `design.md`'s "not a later pass" without pulling Phase 7
   forward.
 
-### 4. Then Phase 2 — Payments & cards, admin UI first
+### 3. Then Phase 2 — Payments & cards, admin UI first
 
 Per `roadmap.md` and the standing decision that the admin UI comes early:
 
 - **Admin back office UI** (`apps/admin`, currently an empty Next.js shell — five
   source files). The API behind it is complete and reachable only by raw HTTP:
   two-step login (password + TOTP), customer and wallet views, ledger
-  reconciliation, audit read/verify, four-eyes funding approval, admin staffing.
-  Build against `@fides/ui-web` and `@fides/i18n`, which already exist.
+  reconciliation, audit read/verify, four-eyes funding approval and second-factor
+  reset, password rotation, admin staffing. Build against `@fides/ui-web` and
+  `@fides/i18n`, which already exist. Note that the four-eyes queue now carries
+  **two** action types with different payload shapes and different decision
+  routes, so the queue view has to discriminate on `type`.
 - **Customer account recovery** — agreed to *design now, build here*, because
   support-mediated recovery needs the back office to operate it. Passkeys are the
   only credential (ADR-0020), so a user who loses every device loses the account.
@@ -195,6 +222,15 @@ sign-in does not imply passing it; if only one thing gets tested, test that.
   address is PII and there is no admin to reference.
 - The transfer route's recipient-existence oracle, superseded by `@tag` handles.
 - Throttle counters are in-memory, per-instance, and reset on restart.
+- **A second-factor reset needs a live checker.** A deployment with one
+  `super_admin` who loses their authenticator has no path, because nobody else may
+  approve and they may not approve their own. **Staffing at least two
+  `super_admin` accounts is now an operational requirement**, not a preference.
+- Two colluding operators (a `compliance_officer` and a `super_admin`) can take
+  over a third's account through a reset. Four-eyes bounds unilateral action, not
+  collusion; the trail names both.
+- No admin-initiated password reset, so a forgotten admin password still ends at
+  disable-and-recreate.
 
 **Still to do:** `apps/admin` is an empty shell; the E2E covers only the happy
 path; no accessibility pass has been run on either client.
@@ -248,7 +284,40 @@ path; no accessibility pass has been run on either client.
 
 ## Traps found the hard way
 
-**From this session:**
+**From Slice 10 Wave B:**
+
+- **The TOTP replay guard caps how many codes a single admin can spend per
+  30-second step, and that shapes the tests.** The server verifies against real
+  wall-clock time with a ±1-step window, and each success raises `lastTotpStep`,
+  so **at most two ceremonies per admin per test** are safe: one code at
+  `Date.now()` and one at `Date.now() + 30_000`. Reaching further (`+60_000`) lands
+  outside the acceptance window and reaching back (`-30_000`) becomes flaky if the
+  wall clock crosses a step boundary mid-test. Where more ceremonies are needed,
+  either use a *different* admin (the guard is per-row) or drop to the
+  service-level suite, which has a `TestClock` and can advance freely.
+- **Session tokens can be minted without a ceremony** via
+  `AdminSessionService.issueSession(db, adminId)` — that is how the HTTP test gives
+  one operator two live sessions without spending a second code.
+- **Renaming a contracts file needs `git mv` plus the `index.ts` export**;
+  `packages/contracts/src/admin/funding.ts` became `four-eyes.ts` here, and the
+  API consumes contracts from `dist`, so rebuild before typechecking.
+- **CodeQL fires `js/insufficient-password-hash` on audit action names containing
+  "Password".** The audit chain's tamper-evidence hash is SHA-256, and every
+  `AuditAction` constant flows into it as the record's `action` field — so naming
+  one `AdminPasswordChanged` made CodeQL read the constant as a credential.
+  Dismissed as a false positive with the analysis recorded in `security.md` §9.2.
+  **If you add another audit action with "password", "secret", or "token" in its
+  name, expect this to fire again** — and note that an inline suppression is the
+  wrong tool, because the alert lands on the shared `sha256Hex`, which also hashes
+  session tokens at rest and must stay scanned.
+- **`documentation.md` and `roadmap.md` had both silently fallen behind.** The ADR
+  index stopped at 0027 while 0028 and 0029 existed; the change log had no rows for
+  Slices 9 or 10 A; the header version was below its own table; and `roadmap.md`
+  had not been touched since discovery. All repaired in #37. **Check the whole doc
+  set each slice, not only the file the change obviously touches** — the drift was
+  invisible from the code and from CI.
+
+**From Slice 9 / 10 A:**
 
 - **Pinned-forward overrides drift.** `GHSA-5p4m-2wfm-xmqj` was published against
   `js-yaml >=4.0.0 <4.3.1`, so ADR-0026's `>=4.3.0` pin became vulnerable *in

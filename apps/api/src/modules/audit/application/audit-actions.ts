@@ -30,6 +30,15 @@ export const AuditAction = {
   AdminSessionRevoked: 'admin.session.revoked',
   /** An admin activated their TOTP second factor. */
   AdminMfaEnrolled: 'admin.mfa.enrolled',
+  /** An admin rotated their own password (ADR-0030). */
+  AdminPasswordChanged: 'admin.password.changed',
+  /**
+   * An admin's second factor was cleared by an approved four-eyes reset
+   * (ADR-0030). Distinct from the approval record: this one is written against
+   * the *target* admin, so their history shows the factor changing hands, while
+   * the approval is written against the pending action.
+   */
+  AdminMfaReset: 'admin.mfa.reset',
   /**
    * A back-office authentication attempt was denied (ADR-0029). The exception
    * to ADR-0024's "audit inside the action's transaction": a denial has no
@@ -47,6 +56,12 @@ export const AuditAction = {
   AdminFundingApproved: 'admin_funding.approved',
   /** A checker rejected a funding request; no money moved. */
   AdminFundingRejected: 'admin_funding.rejected',
+  /** A maker requested a reset of another operator's second factor (ADR-0030). */
+  AdminTotpResetRequested: 'admin_totp_reset.requested',
+  /** A checker approved a reset; the factor was cleared in the same transaction. */
+  AdminTotpResetApproved: 'admin_totp_reset.approved',
+  /** A checker rejected a reset; the target's factor is untouched. */
+  AdminTotpResetRejected: 'admin_totp_reset.rejected',
 } as const;
 
 export type AuditActionName = (typeof AuditAction)[keyof typeof AuditAction];

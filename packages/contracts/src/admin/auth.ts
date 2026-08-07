@@ -129,6 +129,39 @@ export const AdminIdParamsSchema = z.object({ adminId: z.string().uuid() });
 
 export type AdminIdParamsDto = z.infer<typeof AdminIdParamsSchema>;
 
+/**
+ * Self-service password rotation (ADR-0030). Both factors are re-proven: the
+ * current password, and a fresh TOTP code — a stolen session alone must never be
+ * enough to take an operator's account over permanently.
+ */
+export const AdminPasswordChangeRequestSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(1024),
+    newPassword: z.string().min(12).max(1024),
+    totpCode: z
+      .string()
+      .regex(/^\d{6}$/)
+      .openapi({
+        description:
+          'A six-digit code that has not been used before. It advances the same replay guard sign-in does, so a code just spent signing in will be rejected until the next 30-second step.',
+        example: '123456',
+      }),
+  })
+  .openapi('AdminPasswordChangeRequest');
+
+export type AdminPasswordChangeRequestDto = z.infer<typeof AdminPasswordChangeRequestSchema>;
+
+export const AdminPasswordChangeResponseSchema = z
+  .object({
+    revokedSessions: z.number().int().nonnegative().openapi({
+      description:
+        'Other back-office sessions revoked by the change; the calling session is kept alive',
+    }),
+  })
+  .openapi('AdminPasswordChangeResponse');
+
+export type AdminPasswordChangeResponseDto = z.infer<typeof AdminPasswordChangeResponseSchema>;
+
 /** The authenticated admin's own profile and effective capabilities. */
 export const AdminProfileSchema = z
   .object({

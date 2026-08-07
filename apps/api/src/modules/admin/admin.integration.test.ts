@@ -748,3 +748,294 @@ describe('admin login lockout (ADR-0029)', () => {
     expect(admin!.failedLoginAttempts).toBe(0);
   });
 });
+
+const NEW_PASSWORD = 'an-entirely-different-passphrase';
+
+/** Sign an admin in for real, returning the principal and the enrolled secret. */
+async function signIn(
+  identity: AdminIdentityService,
+  email: string,
+  password: string,
+): Promise<{ principal: AdminPrincipal; secret: string; token: string }> {
+  const challenge = await identity.login(email, password);
+  const { secret } = await identity.beginMfaEnrolment(challenge.challengeToken);
+  const session = await identity.verifyMfa(
+    challenge.challengeToken,
+    generateTotp(secret, clock.now().getTime()),
+  );
+  const admin = await identity.getAdmin(session.adminId);
+  return {
+    principal: {
+      adminId: session.adminId,
+      sessionId: session.sessionId,
+      role: admin.role,
+      email: admin.email,
+    },
+    secret,
+    token: session.token,
+  };
+}
+
+describe('admin password change (ADR-0030)', () => {
+  beforeEach(async () => {
+    await insertAdmin({
+      id: SUPER_ID,
+      email: 'ops@fides.local',
+      role: 'super_admin',
+      password: PASSWORD,
+    });
+  });
+
+  it('rotates the password, spares the calling session, and cuts the others', async () => {
+    const { identity, sessions } = identityService();
+    const caller = await signIn(identity, 'ops@fides.local', PASSWORD);
+    // A second live session — an old browser, or an attacker's.
+    const other = await sessions.issueSession(db as TestDatabase, SUPER_ID);
+
+    clock.advance(30_000);
+    const result = await identity.changePassword(caller.principal, {
+      currentPassword: PASSWORD,
+      newPassword: NEW_PASSWORD,
+      totpCode: generateTotp(caller.secret, clock.now().getTime()),
+    });
+    expect(result.revokedSessions).toBe(1);
+
+    // The change is the containment lever, so the other session dies with it...
+    await expect(sessions.validateToken(other.token)).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+    // ...and the one making the request survives, so rotation is not a sign-out.
+    expect(await sessions.validateToken(caller.token)).toMatchObject({ adminId: SUPER_ID });
+  });
+
+  it('replaces the credential: the old password stops working and the new one starts', async () => {
+    const { identity } = identityService();
+    const { principal, secret } = await signIn(identity, 'ops@fides.local', PASSWORD);
+
+    clock.advance(30_000);
+    await identity.changePassword(principal, {
+      currentPassword: PASSWORD,
+      newPassword: NEW_PASSWORD,
+      totpCode: generateTotp(secret, clock.now().getTime()),
+    });
+
+    await expect(identity.login('ops@fides.local', PASSWORD)).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+    const challenge = await identity.login('ops@fides.local', NEW_PASSWORD);
+    expect(challenge.mfaEnrolled).toBe(true);
+  });
+
+  it('rejects the very code that just signed the admin in', async () => {
+    // The replay guard is shared with sign-in on purpose. If it were not, a code
+    // observed in transit and spent here would still be usable at login.
+    const { identity } = identityService();
+    const { principal, secret } = await signIn(identity, 'ops@fides.local', PASSWORD);
+
+    await expect(
+      identity.changePassword(principal, {
+        currentPassword: PASSWORD,
+        newPassword: NEW_PASSWORD,
+        totpCode: generateTotp(secret, clock.now().getTime()),
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+
+    // Unchanged, so the rejection was total rather than partial.
+    const challenge = await identity.login('ops@fides.local', PASSWORD);
+    expect(challenge.challengeToken).toMatch(/^alc_/);
+  });
+
+  it('counts a wrong password and a wrong code against the same lockout', async () => {
+    // An authenticated session must not be an unbounded oracle against the very
+    // credential the second factor protects.
+    const { identity } = identityService({ lockoutThreshold: 3 });
+    const { principal, secret } = await signIn(identity, 'ops@fides.local', PASSWORD);
+
+    clock.advance(30_000);
+    await expect(
+      identity.changePassword(principal, {
+        currentPassword: 'not-the-password',
+        newPassword: NEW_PASSWORD,
+        totpCode: generateTotp(secret, clock.now().getTime()),
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    await expect(
+      identity.changePassword(principal, {
+        currentPassword: PASSWORD,
+        newPassword: NEW_PASSWORD,
+        totpCode: '000000',
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(admin!.failedLoginAttempts).toBe(2);
+
+    const denials = (await db.select().from(auditLog)).filter(
+      (row) => row.action === AuditAction.AdminAuthDenied,
+    );
+    expect(denials).toHaveLength(2);
+    expect(denials.map((row) => (row.metadata as Record<string, string>).factor)).toEqual([
+      'password',
+      'totp',
+    ]);
+    // The flow is on the record too, so a denial from a rotation is not read as
+    // a failed sign-in.
+    expect((denials[0]!.metadata as Record<string, string>).operation).toBe('password_change');
+  });
+
+  it('refuses a password that is too short, or unchanged', async () => {
+    const { identity } = identityService();
+    const { principal, secret } = await signIn(identity, 'ops@fides.local', PASSWORD);
+    clock.advance(30_000);
+    const totpCode = generateTotp(secret, clock.now().getTime());
+
+    await expect(
+      identity.changePassword(principal, {
+        currentPassword: PASSWORD,
+        newPassword: 'short',
+        totpCode,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(
+      identity.changePassword(principal, {
+        currentPassword: PASSWORD,
+        newPassword: PASSWORD,
+        totpCode,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+
+  it('audits the change, clears the lockout counter, and leaves the chain intact', async () => {
+    const { identity } = identityService({ lockoutThreshold: 5 });
+    await expect(identity.login('ops@fides.local', 'wrong')).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+    const { principal, secret } = await signIn(identity, 'ops@fides.local', PASSWORD);
+
+    clock.advance(30_000);
+    await identity.changePassword(principal, {
+      currentPassword: PASSWORD,
+      newPassword: NEW_PASSWORD,
+      totpCode: generateTotp(secret, clock.now().getTime()),
+    });
+
+    const [record] = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, AuditAction.AdminPasswordChanged));
+    expect(record).toMatchObject({ actorType: 'admin', actorId: SUPER_ID, resourceId: SUPER_ID });
+    // Never the credential itself, old or new.
+    expect(JSON.stringify(record)).not.toContain(NEW_PASSWORD);
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, SUPER_ID));
+    expect(admin!.failedLoginAttempts).toBe(0);
+    expect(admin!.lastTotpStep).toBe(totpStep(clock.now().getTime()));
+    expect(await audit.verify()).toMatchObject({ ok: true });
+  });
+});
+
+describe('admin second-factor reset (ADR-0030)', () => {
+  beforeEach(async () => {
+    await insertAdmin({
+      id: SUPER_ID,
+      email: 'ops@fides.local',
+      role: 'super_admin',
+      password: PASSWORD,
+    });
+    await insertAdmin({
+      id: AGENT_ID,
+      email: 'agent@fides.local',
+      role: 'support_agent',
+      password: PASSWORD,
+    });
+  });
+
+  it('clears the factor, the replay guard, and the lock, and revokes every session', async () => {
+    const { identity, sessions } = identityService({ lockoutThreshold: 3 });
+    const agent = await signIn(identity, 'agent@fides.local', PASSWORD);
+
+    // The state a lost authenticator actually leaves behind: failed codes, and
+    // usually a lock.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const challenge = await identity.login('agent@fides.local', PASSWORD);
+      await expect(identity.verifyMfa(challenge.challengeToken, '000000')).rejects.toMatchObject({
+        code: 'UNAUTHENTICATED',
+      });
+    }
+    expect(
+      (await db.select().from(admins).where(eq(admins.id, AGENT_ID)))[0]!.lockedUntil,
+    ).not.toBe(null);
+
+    const result = await identity.resetTotp(
+      db as TestDatabase,
+      { targetAdminId: AGENT_ID, actorId: SUPER_ID },
+      clock.now(),
+    );
+    expect(result.revokedSessions).toBe(1);
+
+    const [reset] = await db.select().from(admins).where(eq(admins.id, AGENT_ID));
+    expect(reset!.totpSecret).toBeNull();
+    expect(reset!.totpEnrolledAt).toBeNull();
+    // A stale step from the old secret would reject codes from the new one until
+    // wall-clock time caught up.
+    expect(reset!.lastTotpStep).toBeNull();
+    // Recovering the credential and leaving the lock would still deny the login.
+    expect(reset!.lockedUntil).toBeNull();
+    expect(reset!.failedLoginAttempts).toBe(0);
+
+    // A factor being reset may be a factor in the wrong hands.
+    await expect(sessions.validateToken(agent.token)).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+  });
+
+  it('leaves the operator able to enrol a fresh factor at next login', async () => {
+    const { identity } = identityService();
+    const before = await signIn(identity, 'agent@fides.local', PASSWORD);
+
+    await identity.resetTotp(
+      db as TestDatabase,
+      { targetAdminId: AGENT_ID, actorId: SUPER_ID },
+      clock.now(),
+    );
+
+    const after = await signIn(identity, 'agent@fides.local', PASSWORD);
+    expect(after.secret).not.toBe(before.secret);
+    expect(after.token).toMatch(/^ast_/);
+  });
+
+  it('audits the reset against the target, attributed to the approving admin', async () => {
+    const { identity } = identityService();
+    await signIn(identity, 'agent@fides.local', PASSWORD);
+
+    await identity.resetTotp(
+      db as TestDatabase,
+      { targetAdminId: AGENT_ID, actorId: SUPER_ID, correlationId: 'reset-corr-000001' },
+      clock.now(),
+    );
+
+    const [record] = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, AuditAction.AdminMfaReset));
+    expect(record).toMatchObject({
+      actorType: 'admin',
+      // Who did it, and to whom: both are needed to read this later.
+      actorId: SUPER_ID,
+      resourceId: AGENT_ID,
+      correlationId: 'reset-corr-000001',
+    });
+    expect(await audit.verify()).toMatchObject({ ok: true });
+  });
+
+  it('raises rather than silently succeeding on an unknown target', async () => {
+    const { identity } = identityService();
+    await expect(
+      identity.resetTotp(
+        db as TestDatabase,
+        { targetAdminId: '00000000-0000-7000-8000-0000000000ff', actorId: SUPER_ID },
+        clock.now(),
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});

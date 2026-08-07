@@ -18,5 +18,5 @@ export * from './payments/paths';
 export * from './admin/auth';
 export * from './admin/directory';
 export * from './admin/audit';
-export * from './admin/funding';
+export * from './admin/four-eyes';
 export * from './admin/paths';

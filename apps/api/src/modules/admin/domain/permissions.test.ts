@@ -62,6 +62,22 @@ describe('admin permission matrix', () => {
     ]);
   });
 
+  it('makes super_admin the second-factor reset checker and denies it the maker half', () => {
+    expect(hasPermission('super_admin', AdminPermission.AdminTotpResetApprove)).toBe(true);
+    expect(hasPermission('super_admin', AdminPermission.AdminTotpResetRequest)).toBe(false);
+    expect(rolesWithPermission(AdminPermission.AdminTotpResetApprove)).toEqual(['super_admin']);
+  });
+
+  // Narrower than funding on purpose (ADR-0030): a funding credit is money, but
+  // a factor reset hands over a back-office identity, so front-line support may
+  // raise the first and not the second.
+  it('reserves the second-factor reset maker half to compliance_officer', () => {
+    expect(rolesWithPermission(AdminPermission.AdminTotpResetRequest)).toEqual([
+      'compliance_officer',
+    ]);
+    expect(hasPermission('support_agent', AdminPermission.AdminTotpResetRequest)).toBe(false);
+  });
+
   it('reserves back-office staffing to super_admin', () => {
     expect(rolesWithPermission(AdminPermission.AdminsManage)).toEqual(['super_admin']);
   });
@@ -70,6 +86,8 @@ describe('admin permission matrix', () => {
     const writePermissions: AdminPermissionName[] = [
       AdminPermission.AdminFundingRequest,
       AdminPermission.AdminFundingApprove,
+      AdminPermission.AdminTotpResetRequest,
+      AdminPermission.AdminTotpResetApprove,
       AdminPermission.AdminsManage,
     ];
     for (const permission of writePermissions) {

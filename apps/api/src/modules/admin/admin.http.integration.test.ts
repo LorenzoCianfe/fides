@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 import { seedAdmin, signInAdmin, type AdminSession } from '../../../test/admin';
@@ -9,11 +10,14 @@ import { SoftwareAuthenticator } from '../../../test/webauthn';
 import { AppModule } from '../../app.module';
 import { configureApp } from '../../app.setup';
 import { loadEnv } from '../../config/env';
+import { generateTotp } from '../../shared/crypto/totp';
 import { OutboxDispatcher } from '../../shared/outbox/outbox.dispatcher';
 import { NOTIFICATIONS } from '../../shared/tokens';
 import { AuditAction } from '../audit/application/audit-actions';
 import { AuditService } from '../audit/application/audit.service';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
+import { AdminSessionService } from './application/admin-session.service';
+import { admins } from './infra/admin.schema';
 
 const ORIGIN = 'http://localhost:3001';
 const RP_ID = 'localhost';
@@ -23,10 +27,12 @@ const EUR = 'EUR' as const;
 const BOOTSTRAP_EMAIL = 'root@fides.local';
 const BOOTSTRAP_PASSWORD = 'a-sufficiently-long-password';
 const MAKER_PASSWORD = 'another-sufficiently-long-password';
+const ROTATED_PASSWORD = 'a-third-sufficiently-long-password';
 
 const SUPER_ID = '00000000-0000-7000-8000-00000000c001';
 const MAKER_ID = '00000000-0000-7000-8000-00000000c002';
 const AUDITOR_ID = '00000000-0000-7000-8000-00000000c003';
+const TARGET_ID = '00000000-0000-7000-8000-00000000c004';
 
 const baseInput = {
   givenName: 'Alice',
@@ -446,14 +452,14 @@ describe('four-eyes admin funding', () => {
     // The maker cannot approve their own request, even though the request is
     // otherwise perfectly valid — this is the segregation-of-duties boundary.
     await request(server)
-      .post(`/v1/admin/pending-actions/${filed.body.id as string}/approve`)
+      .post(`/v1/admin/funding-requests/${filed.body.id as string}/approve`)
       .set('Authorization', `Bearer ${maker.token}`)
       .set('Idempotency-Key', 'self-approve')
       .send({})
       .expect(403);
 
     const approved = await request(server)
-      .post(`/v1/admin/pending-actions/${filed.body.id as string}/approve`)
+      .post(`/v1/admin/funding-requests/${filed.body.id as string}/approve`)
       .set('Authorization', `Bearer ${checker.token}`)
       .set('Idempotency-Key', 'approve-1')
       .set('X-Correlation-Id', 'four-eyes-corr-000002')
@@ -520,7 +526,7 @@ describe('four-eyes admin funding', () => {
     const actionId = filed.body.id as string;
 
     const first = await request(server)
-      .post(`/v1/admin/pending-actions/${actionId}/approve`)
+      .post(`/v1/admin/funding-requests/${actionId}/approve`)
       .set('Authorization', `Bearer ${checker.token}`)
       .set('Idempotency-Key', 'approve-once')
       .send({})
@@ -528,7 +534,7 @@ describe('four-eyes admin funding', () => {
 
     // The same key replays the stored result: no second posting.
     const replay = await request(server)
-      .post(`/v1/admin/pending-actions/${actionId}/approve`)
+      .post(`/v1/admin/funding-requests/${actionId}/approve`)
       .set('Authorization', `Bearer ${checker.token}`)
       .set('Idempotency-Key', 'approve-once')
       .send({})
@@ -537,7 +543,7 @@ describe('four-eyes admin funding', () => {
 
     // A fresh key on an already-decided request is rejected outright.
     await request(server)
-      .post(`/v1/admin/pending-actions/${actionId}/approve`)
+      .post(`/v1/admin/funding-requests/${actionId}/approve`)
       .set('Authorization', `Bearer ${checker.token}`)
       .set('Idempotency-Key', 'approve-again')
       .send({})
@@ -569,7 +575,7 @@ describe('four-eyes admin funding', () => {
       .expect(201);
 
     const rejected = await request(server)
-      .post(`/v1/admin/pending-actions/${filed.body.id as string}/reject`)
+      .post(`/v1/admin/funding-requests/${filed.body.id as string}/reject`)
       .set('Authorization', `Bearer ${checker.token}`)
       .send({ reason: 'No supporting evidence' })
       .expect(200);
@@ -580,7 +586,7 @@ describe('four-eyes admin funding', () => {
     });
 
     await request(server)
-      .post(`/v1/admin/pending-actions/${filed.body.id as string}/approve`)
+      .post(`/v1/admin/funding-requests/${filed.body.id as string}/approve`)
       .set('Authorization', `Bearer ${checker.token}`)
       .set('Idempotency-Key', 'too-late')
       .send({})
@@ -631,7 +637,7 @@ describe('four-eyes admin funding', () => {
       .expect(201);
 
     await request(server)
-      .post(`/v1/admin/pending-actions/${filed.body.id as string}/approve`)
+      .post(`/v1/admin/funding-requests/${filed.body.id as string}/approve`)
       .set('Authorization', `Bearer ${checker.token}`)
       .send({})
       .expect(400);
@@ -657,7 +663,7 @@ describe('four-eyes admin funding', () => {
     expect(pending.body.items).toHaveLength(2);
 
     await request(server)
-      .post(`/v1/admin/pending-actions/${pending.body.items[0].id as string}/reject`)
+      .post(`/v1/admin/funding-requests/${pending.body.items[0].id as string}/reject`)
       .set('Authorization', `Bearer ${checker.token}`)
       .send({})
       .expect(200);
@@ -673,6 +679,357 @@ describe('four-eyes admin funding', () => {
       .set('Authorization', `Bearer ${maker.token}`)
       .expect(200);
     expect(single.body.status).toBe('pending');
+  });
+});
+
+/**
+ * A code for the next time step. The replay guard rejects anything not strictly
+ * past the last accepted step, so a second ceremony inside one 30-second window
+ * has to reach forward — still inside the server's ±1-step acceptance window,
+ * which is what makes this deterministic rather than a race with the wall clock.
+ */
+function nextStepCode(secret: string): string {
+  return generateTotp(secret, Date.now() + 30_000);
+}
+
+describe('admin password change (HTTP)', () => {
+  it('rotates the credential and revokes the admin’s other sessions', async () => {
+    const session = await signInSuper();
+    // A second live session for the same operator, minted without a second
+    // ceremony — the replay guard allows only so many codes per time step.
+    const other = await app
+      .get(AdminSessionService)
+      .issueSession(db as TestDatabase, session.adminId);
+
+    const changed = await request(server)
+      .post('/v1/admin/me/password')
+      .set('Authorization', `Bearer ${session.token}`)
+      .set('X-Correlation-Id', 'pw-change-corr-0001')
+      .send({
+        currentPassword: BOOTSTRAP_PASSWORD,
+        newPassword: ROTATED_PASSWORD,
+        totpCode: nextStepCode(session.secret),
+      })
+      .expect(200);
+    expect(changed.body).toEqual({ revokedSessions: 1 });
+
+    // The calling session still works; the other one is gone.
+    await request(server)
+      .get('/v1/admin/me')
+      .set('Authorization', `Bearer ${session.token}`)
+      .expect(200);
+    await request(server)
+      .get('/v1/admin/me')
+      .set('Authorization', `Bearer ${other.token}`)
+      .expect(401);
+
+    // The credential really moved.
+    await request(server)
+      .post('/v1/admin/auth/login')
+      .send({ email: BOOTSTRAP_EMAIL, password: BOOTSTRAP_PASSWORD })
+      .expect(401);
+    await request(server)
+      .post('/v1/admin/auth/login')
+      .send({ email: BOOTSTRAP_EMAIL, password: ROTATED_PASSWORD })
+      .expect(200);
+
+    const trail = await request(server)
+      .get(`/v1/admin/audit?action=${AuditAction.AdminPasswordChanged}`)
+      .set('Authorization', `Bearer ${session.token}`)
+      .expect(200);
+    expect(trail.body.items[0]).toMatchObject({
+      actorType: 'admin',
+      actorId: session.adminId,
+      correlationId: 'pw-change-corr-0001',
+    });
+    expect(await app.get(AuditService).verify()).toMatchObject({ ok: true });
+  });
+
+  it('needs both factors, and rejects a code already spent signing in', async () => {
+    const session = await signInSuper();
+
+    // A stolen session alone is not enough: the current password is required.
+    await request(server)
+      .post('/v1/admin/me/password')
+      .set('Authorization', `Bearer ${session.token}`)
+      .send({
+        currentPassword: 'not-the-current-password',
+        newPassword: ROTATED_PASSWORD,
+        totpCode: nextStepCode(session.secret),
+      })
+      .expect(401);
+
+    // Nor is the password plus a replayed code — the guard is shared with login.
+    await request(server)
+      .post('/v1/admin/me/password')
+      .set('Authorization', `Bearer ${session.token}`)
+      .send({
+        currentPassword: BOOTSTRAP_PASSWORD,
+        newPassword: ROTATED_PASSWORD,
+        totpCode: generateTotp(session.secret, Date.now()),
+      })
+      .expect(401);
+
+    // A new password shorter than the minimum never reaches the factors.
+    await request(server)
+      .post('/v1/admin/me/password')
+      .set('Authorization', `Bearer ${session.token}`)
+      .send({ currentPassword: BOOTSTRAP_PASSWORD, newPassword: 'short', totpCode: '123456' })
+      .expect(400);
+
+    // Unchanged throughout.
+    await request(server)
+      .post('/v1/admin/auth/login')
+      .send({ email: BOOTSTRAP_EMAIL, password: BOOTSTRAP_PASSWORD })
+      .expect(200);
+  });
+
+  it('is closed to anonymous callers', async () => {
+    await request(server)
+      .post('/v1/admin/me/password')
+      .send({
+        currentPassword: BOOTSTRAP_PASSWORD,
+        newPassword: ROTATED_PASSWORD,
+        totpCode: '123456',
+      })
+      .expect(401);
+  });
+});
+
+describe('four-eyes second-factor reset (ADR-0030)', () => {
+  /** A compliance officer: holds the reset maker half, and cannot hold the checker half. */
+  async function staffMaker(): Promise<AdminSession> {
+    await seedAdmin(db as TestDatabase, {
+      id: MAKER_ID,
+      email: 'maker@fides.local',
+      role: 'compliance_officer',
+      password: MAKER_PASSWORD,
+    });
+    return signInAdmin(server, { email: 'maker@fides.local', password: MAKER_PASSWORD });
+  }
+
+  /** The operator who has lost their authenticator, signed in while they still could. */
+  async function staffTarget(): Promise<AdminSession> {
+    await seedAdmin(db as TestDatabase, {
+      id: TARGET_ID,
+      email: 'target@fides.local',
+      role: 'support_agent',
+      password: MAKER_PASSWORD,
+    });
+    return signInAdmin(server, { email: 'target@fides.local', password: MAKER_PASSWORD });
+  }
+
+  it('clears nothing until a second admin approves, then recovers the operator', async () => {
+    const checker = await signInSuper();
+    const maker = await staffMaker();
+    const target = await staffTarget();
+
+    const filed = await request(server)
+      .post('/v1/admin/totp-resets')
+      .set('Authorization', `Bearer ${maker.token}`)
+      .set('X-Correlation-Id', 'reset-corr-000001')
+      .send({ adminId: target.adminId, reason: 'Authenticator lost with the device' })
+      .expect(201);
+    expect(filed.body).toMatchObject({
+      type: 'admin_totp_reset',
+      status: 'pending',
+      makerId: maker.adminId,
+      checkerId: null,
+      payload: { targetAdminId: target.adminId, targetEmail: 'target@fides.local' },
+    });
+
+    // Filing changed nothing: the target is still signed in and still enrolled.
+    await request(server)
+      .get('/v1/admin/me')
+      .set('Authorization', `Bearer ${target.token}`)
+      .expect(200);
+
+    const approved = await request(server)
+      .post(`/v1/admin/totp-resets/${filed.body.id as string}/approve`)
+      .set('Authorization', `Bearer ${checker.token}`)
+      .set('X-Correlation-Id', 'reset-corr-000002')
+      .send({ reason: 'Identity confirmed by video call' })
+      .expect(200);
+    expect(approved.body).toMatchObject({
+      revokedSessions: 1,
+      action: { status: 'approved', checkerId: checker.adminId, resultRef: target.adminId },
+    });
+
+    // The old factor is gone and so is every session standing on it.
+    await request(server)
+      .get('/v1/admin/me')
+      .set('Authorization', `Bearer ${target.token}`)
+      .expect(401);
+
+    // And the operator recovers themselves: password, fresh enrolment, session.
+    const recovered = await signInAdmin(server, {
+      email: 'target@fides.local',
+      password: MAKER_PASSWORD,
+    });
+    expect(recovered.secret).not.toBe(target.secret);
+    await request(server)
+      .get('/v1/admin/me')
+      .set('Authorization', `Bearer ${recovered.token}`)
+      .expect(200);
+
+    const trail = await request(server)
+      .get('/v1/admin/audit?limit=100')
+      .set('Authorization', `Bearer ${checker.token}`)
+      .expect(200);
+    const byAction = new Map<string, Record<string, unknown>>(
+      (trail.body.items as Record<string, unknown>[]).map((row) => [row.action as string, row]),
+    );
+    expect(byAction.get(AuditAction.AdminTotpResetRequested)).toMatchObject({
+      actorId: maker.adminId,
+      correlationId: 'reset-corr-000001',
+    });
+    expect(byAction.get(AuditAction.AdminTotpResetApproved)).toMatchObject({
+      actorId: checker.adminId,
+      correlationId: 'reset-corr-000002',
+    });
+    // The effect is recorded against the target, not only against the request.
+    expect(byAction.get(AuditAction.AdminMfaReset)).toMatchObject({
+      actorId: checker.adminId,
+      resourceId: target.adminId,
+    });
+    expect(await app.get(AuditService).verify()).toMatchObject({ ok: true });
+  });
+
+  it('refuses a checker who is the target — a reset of your own factor is a bypass', async () => {
+    const checker = await signInSuper();
+    const maker = await staffMaker();
+
+    const filed = await request(server)
+      .post('/v1/admin/totp-resets')
+      .set('Authorization', `Bearer ${maker.token}`)
+      .send({ adminId: checker.adminId, reason: 'Convenient' })
+      .expect(201);
+
+    // `checkerId != makerId` says nothing about the target, so this needs its
+    // own rule: approving here would clear your own second factor unilaterally.
+    await request(server)
+      .post(`/v1/admin/totp-resets/${filed.body.id as string}/approve`)
+      .set('Authorization', `Bearer ${checker.token}`)
+      .send({})
+      .expect(403);
+
+    const [admin] = await db.select().from(admins).where(eq(admins.id, checker.adminId));
+    expect(admin!.totpSecret).not.toBeNull();
+    expect(admin!.totpEnrolledAt).not.toBeNull();
+  });
+
+  it('splits the halves across roles, and none of them across one role', async () => {
+    const checker = await signInSuper();
+    const maker = await staffMaker();
+    const target = await staffTarget();
+
+    // super_admin approves and therefore may not raise.
+    await request(server)
+      .post('/v1/admin/totp-resets')
+      .set('Authorization', `Bearer ${checker.token}`)
+      .send({ adminId: target.adminId, reason: 'self-service attempt' })
+      .expect(403);
+
+    // A support agent may raise funding but not a credential reset: this half is
+    // deliberately narrower than the funding one.
+    await request(server)
+      .post('/v1/admin/totp-resets')
+      .set('Authorization', `Bearer ${target.token}`)
+      .send({ adminId: maker.adminId, reason: 'front-line attempt' })
+      .expect(403);
+
+    const filed = await request(server)
+      .post('/v1/admin/totp-resets')
+      .set('Authorization', `Bearer ${maker.token}`)
+      .send({ adminId: target.adminId, reason: 'Authenticator lost' })
+      .expect(201);
+
+    // ...and the maker cannot decide their own request either.
+    await request(server)
+      .post(`/v1/admin/totp-resets/${filed.body.id as string}/approve`)
+      .set('Authorization', `Bearer ${maker.token}`)
+      .send({})
+      .expect(403);
+  });
+
+  it('cannot be decided through the other type’s route', async () => {
+    // super_admin holds both checker halves, so the guard lets it through and
+    // the type assertion under the row lock is the control being tested.
+    const checker = await signInSuper();
+    const maker = await staffMaker();
+    const target = await staffTarget();
+    const customer = await enrolCustomer('alice@example.com');
+
+    const reset = await request(server)
+      .post('/v1/admin/totp-resets')
+      .set('Authorization', `Bearer ${maker.token}`)
+      .send({ adminId: target.adminId, reason: 'Authenticator lost' })
+      .expect(201);
+    const funding = await request(server)
+      .post('/v1/admin/funding-requests')
+      .set('Authorization', `Bearer ${maker.token}`)
+      .send({ userId: customer.userId, amount: { amount: '100', currency: EUR }, reason: 'Fine' })
+      .expect(201);
+
+    await request(server)
+      .post(`/v1/admin/funding-requests/${reset.body.id as string}/approve`)
+      .set('Authorization', `Bearer ${checker.token}`)
+      .set('Idempotency-Key', 'cross-type-1')
+      .send({})
+      .expect(400);
+    await request(server)
+      .post(`/v1/admin/totp-resets/${funding.body.id as string}/approve`)
+      .set('Authorization', `Bearer ${checker.token}`)
+      .send({})
+      .expect(400);
+
+    // Neither request was decided, and no money moved.
+    const queue = await request(server)
+      .get('/v1/admin/pending-actions?status=pending')
+      .set('Authorization', `Bearer ${checker.token}`)
+      .expect(200);
+    expect(queue.body.items).toHaveLength(2);
+    expect((await app.get(LedgerStore).sumSignedByCurrency()).get('EUR') ?? 0n).toBe(0n);
+  });
+
+  it('rejects without touching the factor, and cannot then be approved', async () => {
+    const checker = await signInSuper();
+    const maker = await staffMaker();
+    const target = await staffTarget();
+
+    const filed = await request(server)
+      .post('/v1/admin/totp-resets')
+      .set('Authorization', `Bearer ${maker.token}`)
+      .send({ adminId: target.adminId, reason: 'Unverified caller' })
+      .expect(201);
+
+    const rejected = await request(server)
+      .post(`/v1/admin/totp-resets/${filed.body.id as string}/reject`)
+      .set('Authorization', `Bearer ${checker.token}`)
+      .send({ reason: 'Could not confirm identity' })
+      .expect(200);
+    expect(rejected.body).toMatchObject({ status: 'rejected', checkerId: checker.adminId });
+
+    await request(server)
+      .post(`/v1/admin/totp-resets/${filed.body.id as string}/approve`)
+      .set('Authorization', `Bearer ${checker.token}`)
+      .send({})
+      .expect(400);
+
+    // The target never lost anything.
+    await request(server)
+      .get('/v1/admin/me')
+      .set('Authorization', `Bearer ${target.token}`)
+      .expect(200);
+  });
+
+  it('refuses a request against an admin that does not exist', async () => {
+    const maker = await staffMaker();
+    await request(server)
+      .post('/v1/admin/totp-resets')
+      .set('Authorization', `Bearer ${maker.token}`)
+      .send({ adminId: '00000000-0000-7000-8000-0000000000ff', reason: 'Nobody' })
+      .expect(404);
   });
 });
 
@@ -693,9 +1050,15 @@ describe('admin OpenAPI surface', () => {
         '/v1/admin/ledger/accounts/{ledgerAccountId}',
         '/v1/admin/audit',
         '/v1/admin/audit/verify',
+        '/v1/admin/me/password',
         '/v1/admin/funding-requests',
+        '/v1/admin/funding-requests/{actionId}/approve',
+        '/v1/admin/funding-requests/{actionId}/reject',
+        '/v1/admin/totp-resets',
+        '/v1/admin/totp-resets/{actionId}/approve',
+        '/v1/admin/totp-resets/{actionId}/reject',
         '/v1/admin/pending-actions',
-        '/v1/admin/pending-actions/{actionId}/approve',
+        '/v1/admin/pending-actions/{actionId}',
       ]),
     );
   });

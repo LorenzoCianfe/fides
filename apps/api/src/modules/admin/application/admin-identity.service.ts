@@ -8,7 +8,7 @@ import {
 } from '@fides/domain';
 import { randomBytes } from 'node:crypto';
 import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
-import type { Database } from '../../../database/db.types';
+import type { Database, DbExecutor } from '../../../database/db.types';
 import {
   isEncrypted,
   totpSecretContext,
@@ -152,6 +152,8 @@ export class AdminIdentityService {
     adminId: string,
     factor: AdminAuthFactor,
     correlationId?: string,
+    /** Which flow rejected the factor; `sign_in` unless stated otherwise. */
+    operation: 'sign_in' | 'password_change' = 'sign_in',
   ): Promise<void> {
     const now = this.clock.now();
     try {
@@ -184,7 +186,7 @@ export class AdminIdentityService {
           resourceType: AuditResource.Admin,
           resourceId: admin.id,
           correlationId: correlationId ?? null,
-          metadata: { factor, consecutiveFailures: attempts.toString() },
+          metadata: { factor, operation, consecutiveFailures: attempts.toString() },
         });
 
         if (locking) {
@@ -511,6 +513,205 @@ export class AdminIdentityService {
 
       return this.sessions.issueSession(tx, admin.id, correlationId);
     });
+  }
+
+  /**
+   * Rotate the authenticated admin's own password (ADR-0030).
+   *
+   * Both factors are re-proven: the current password, and a *fresh* TOTP code.
+   * The password alone would mean a stolen session is enough to take the account
+   * over permanently, which is the one outcome a second factor exists to prevent.
+   * The code advances `lastTotpStep` exactly as a sign-in does — otherwise a code
+   * spent here would still be replayable at the login step.
+   *
+   * Every other session the admin holds is revoked. A password change is the
+   * lever an operator reaches for when they believe they are compromised, and it
+   * is worth nothing if the attacker's session outlives it; the caller's own
+   * session is spared so routine rotation is not also a sign-out.
+   */
+  async changePassword(
+    admin: AdminPrincipal,
+    input: {
+      readonly currentPassword: string;
+      readonly newPassword: string;
+      readonly totpCode: string;
+    },
+    correlationId?: string,
+  ): Promise<{ readonly revokedSessions: number }> {
+    if (input.newPassword.length < ADMIN_MIN_PASSWORD_LENGTH) {
+      throw new ValidationError(
+        `An admin password must be at least ${ADMIN_MIN_PASSWORD_LENGTH} characters`,
+      );
+    }
+    if (input.newPassword === input.currentPassword) {
+      throw new ValidationError('The new password must differ from the current one');
+    }
+
+    const [current] = await this.db
+      .select()
+      .from(admins)
+      .where(eq(admins.id, admin.adminId))
+      .limit(1);
+    if (!current) throw new AuthenticationError('Admin not found');
+    this.assertNotLocked(current, this.clock.now());
+
+    // Both scrypt operations run outside any transaction: at production
+    // parameters each costs ~100 ms, and holding the admin row locked for that
+    // long would serialize every request the operator makes.
+    if (!(await verifyPassword(input.currentPassword, current.passwordHash))) {
+      await this.recordFailedAttempt(admin.adminId, 'password', correlationId, 'password_change');
+      throw new AuthenticationError('Invalid credentials');
+    }
+    const newPasswordHash = await hashPassword(input.newPassword);
+
+    let codeRejected = false;
+    try {
+      return await this.db.transaction(async (tx) => {
+        const now = this.clock.now();
+        // Locked for the replay guard: two requests carrying the same code must
+        // not both read the same `lastTotpStep` and both pass.
+        const [locked] = await tx
+          .select()
+          .from(admins)
+          .where(eq(admins.id, admin.adminId))
+          .limit(1)
+          .for('update');
+        if (!locked) throw new AuthenticationError('Admin not found');
+        // The password was verified against an unlocked read. If it has changed
+        // since, this request is deciding against a credential that no longer
+        // exists — a compare-and-set is cheap and makes the check honest.
+        if (locked.passwordHash !== current.passwordHash) {
+          throw new AuthenticationError('Invalid credentials');
+        }
+        if (!locked.totpSecret || locked.totpEnrolledAt === null) {
+          throw new AuthenticationError('A second factor must be enrolled to change the password');
+        }
+
+        const secret = this.readTotpSecret(locked);
+        const verification = verifyTotp(
+          secret,
+          input.totpCode,
+          now.getTime(),
+          this.config.totp,
+          locked.lastTotpStep,
+        );
+        if (!verification.valid) {
+          codeRejected = true;
+          throw new AuthenticationError('Invalid verification code');
+        }
+
+        await tx
+          .update(admins)
+          .set({
+            passwordHash: newPasswordHash,
+            lastTotpStep: verification.step,
+            // Both factors have just been satisfied, so this is the second and
+            // only other place the ADR-0029 counter may legitimately clear.
+            failedLoginAttempts: 0,
+            lockedUntil: null,
+            updatedAt: now,
+            // Re-seal a pre-ADR-0028 plaintext secret on the same "the code
+            // verified, so the stored value is genuinely the secret" condition
+            // `verifyMfa` uses.
+            ...(isEncrypted(locked.totpSecret)
+              ? {}
+              : { totpSecret: this.encryption.encrypt(secret, totpSecretContext(locked.id)) }),
+          })
+          .where(eq(admins.id, locked.id));
+
+        const revokedSessions = await this.sessions.revokeAllForAdmin(tx, locked.id, {
+          exceptSessionId: admin.sessionId,
+          reason: 'password_changed',
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        });
+
+        await this.audit.append(tx, {
+          actorType: 'admin',
+          actorId: locked.id,
+          action: AuditAction.AdminPasswordChanged,
+          resourceType: AuditResource.Admin,
+          resourceId: locked.id,
+          correlationId: correlationId ?? null,
+          metadata: { revokedSessions: revokedSessions.toString() },
+        });
+
+        return { revokedSessions };
+      });
+    } finally {
+      // Counted outside the transaction for the ADR-0029 reason: the throw above
+      // rolls it back, and an increment written inside would roll back with it.
+      if (codeRejected) {
+        await this.recordFailedAttempt(admin.adminId, 'totp', correlationId, 'password_change');
+      }
+    }
+  }
+
+  /**
+   * Clear an admin's second factor so they enrol a new one at next login
+   * (ADR-0030). Runs inside the approving four-eyes transaction — never on its
+   * own authority — so the reset and the decision that authorized it commit
+   * together.
+   *
+   * Three things are cleared beyond the secret itself, each for its own reason.
+   * `totpEnrolledAt` because `beginMfaEnrolment` refuses an already-enrolled
+   * admin, so the row must look unenrolled for recovery to work at all.
+   * `lastTotpStep` because a stale step from the old secret would reject codes
+   * from the new one until wall-clock time caught up. And the ADR-0029 lockout,
+   * because an operator whose authenticator is lost has usually been failing the
+   * second factor into a lock — leaving it set would recover the credential and
+   * still deny the login.
+   */
+  async resetTotp(
+    executor: DbExecutor,
+    input: {
+      readonly targetAdminId: string;
+      readonly actorId: string;
+      readonly correlationId?: string;
+    },
+    now: Date,
+  ): Promise<{ readonly revokedSessions: number; readonly target: AdminRow }> {
+    const [target] = await executor
+      .select()
+      .from(admins)
+      .where(eq(admins.id, input.targetAdminId))
+      .limit(1)
+      .for('update');
+    if (!target) throw new NotFoundError('Admin not found', { adminId: input.targetAdminId });
+
+    await executor
+      .update(admins)
+      .set({
+        totpSecret: null,
+        totpEnrolledAt: null,
+        lastTotpStep: null,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        updatedAt: now,
+      })
+      .where(eq(admins.id, target.id));
+
+    // A factor being reset is a factor that may be in the wrong hands. Any
+    // session standing on it has to go, including — unlike the self-service
+    // password change — the target's own.
+    const revokedSessions = await this.sessions.revokeAllForAdmin(executor, target.id, {
+      reason: 'totp_reset',
+      actorId: input.actorId,
+      ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
+    });
+
+    await this.audit.append(executor, {
+      actorType: 'admin',
+      actorId: input.actorId,
+      action: AuditAction.AdminMfaReset,
+      resourceType: AuditResource.Admin,
+      resourceId: target.id,
+      before: { mfaEnrolled: target.totpEnrolledAt !== null },
+      after: { mfaEnrolled: false },
+      correlationId: input.correlationId ?? null,
+      metadata: { revokedSessions: revokedSessions.toString() },
+    });
+
+    return { revokedSessions, target };
   }
 
   /**
