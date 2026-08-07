@@ -200,6 +200,16 @@ The reading rule still applies to whatever is suppressed next: pnpm counts suppr
 
 Two findings sit below the gate threshold and are knowingly open: `@nestjs/core` (moderate) is patched only in a Nest major that belongs to Phase 7, and the remaining moderates are build-tooling transitives with no path from a shipped artifact. The `brace-expansion` patch remains live maintenance debt; its exit condition is the React Native major (`react-native@0.79.7` is what pulls the `glob@7`/`rimraf@3` that pin the `minimatch@3` needing the shim — not the Expo packages, which now resolve `glob@13`), so it retires with the Phase 7 Expo SDK move and not before.
 
+### 9.2 Static analysis findings dismissed
+
+CodeQL runs on every pull request and on `main`. A finding is dismissed only when it is demonstrably wrong about the code, never because it is inconvenient; the analysis is recorded here so the decision lives in the repository and not only on the security dashboard.
+
+| Alert | Rule | Dismissed | Why |
+|---|---|---|---|
+| #3 | `js/insufficient-password-hash` — "Password from an access to `AdminPasswordChanged` is hashed insecurely", reported at `sha256Hex` in `shared/crypto/secrets.ts` | 2026-08-07, false positive | The tainted value is the compile-time constant `AuditAction.AdminPasswordChanged`, whose value is the literal string `admin.password.changed`. It reaches SHA-256 as the `action` field of an audit record, which `computeAuditHash` folds into the append-only chain's tamper-evidence hash (ADR-0024) — the correct primitive for that job. No credential material is on the path: admin passwords are hashed with scrypt in `shared/crypto/password.ts`. The rule fires on the identifier containing "Password"; every other `AuditAction` constant travels the same path without alerting. |
+
+Two alternatives were rejected. **Renaming the audit action** to something the heuristic ignores would bend the vocabulary operators grep in the trail to suit a lexical scanner, making the record less legible for no gain in safety. **An inline suppression at the alert location** would sit on `sha256Hex` itself — the shared helper that also hashes session and refresh tokens at rest — and would therefore blind the one function most worth scanning for a genuine weak-hash defect later. A targeted per-alert dismissal is narrower than either, and a new alert on that sink still fires.
+
 ## 10. Threat model (summary)
 
 **Key assets:** customer funds (ledger integrity), customer PII, authentication credentials, admin capabilities, and the audit trail.

@@ -301,6 +301,15 @@ path; no accessibility pass has been run on either client.
 - **Renaming a contracts file needs `git mv` plus the `index.ts` export**;
   `packages/contracts/src/admin/funding.ts` became `four-eyes.ts` here, and the
   API consumes contracts from `dist`, so rebuild before typechecking.
+- **CodeQL fires `js/insufficient-password-hash` on audit action names containing
+  "Password".** The audit chain's tamper-evidence hash is SHA-256, and every
+  `AuditAction` constant flows into it as the record's `action` field — so naming
+  one `AdminPasswordChanged` made CodeQL read the constant as a credential.
+  Dismissed as a false positive with the analysis recorded in `security.md` §9.2.
+  **If you add another audit action with "password", "secret", or "token" in its
+  name, expect this to fire again** — and note that an inline suppression is the
+  wrong tool, because the alert lands on the shared `sha256Hex`, which also hashes
+  session tokens at rest and must stay scanned.
 - **`documentation.md` and `roadmap.md` had both silently fallen behind.** The ADR
   index stopped at 0027 while 0028 and 0029 existed; the change log had no rows for
   Slices 9 or 10 A; the header version was below its own table; and `roadmap.md`
