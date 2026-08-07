@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Document | State snapshot and continuation guide for Phase 1 (walking skeleton) and its remediation |
-| Branch | Everything through Slice 10 Wave A is **merged to `main`**. Slices 1–7 via [PR #21](https://github.com/LorenzoCianfe/fides/pull/21), Slice 8 via [#30](https://github.com/LorenzoCianfe/fides/pull/30), Slice 9 via [#34](https://github.com/LorenzoCianfe/fides/pull/34), Slice 10 Wave A via [#35](https://github.com/LorenzoCianfe/fides/pull/35). **Slice 10 Wave B is on `feat/slice-10b-admin-credential-recovery`** |
+| Branch | Everything through Slice 10 Wave A is **merged to `main`**. Slices 1–7 via [PR #21](https://github.com/LorenzoCianfe/fides/pull/21), Slice 8 via [#30](https://github.com/LorenzoCianfe/fides/pull/30), Slice 9 via [#34](https://github.com/LorenzoCianfe/fides/pull/34), Slice 10 Wave A via [#35](https://github.com/LorenzoCianfe/fides/pull/35). **Slice 10 Wave B is open as [#37](https://github.com/LorenzoCianfe/fides/pull/37)** |
 | Verified | `apps/api` 309/309 tests green; lint and typecheck 16/16; forced uncached build 7/7; Playwright journey green; dependency audit exits 0 with **zero** high-severity findings |
 | Last updated | 2026-08-07 |
 
@@ -16,7 +16,7 @@
 |---|---|---|
 | 9 | Dependency hygiene — retire the last audit suppression, correct the `brace-expansion` exit condition | **Done** (#34) |
 | 10 A | TOTP secret encryption (ADR-0028), per-account lockout + denied-attempt audit (ADR-0029) | **Done** (#35) |
-| 10 B | Admin password rotation and four-eyes TOTP reset (ADR-0030) | **Done** |
+| 10 B | Admin password rotation and four-eyes TOTP reset (ADR-0030) | **Done** ([#37](https://github.com/LorenzoCianfe/fides/pull/37)) |
 | 11 | Audit tail-truncation anchoring (closes the ADR-0024 deferral) | Next |
 | 12 | Five missing E2E cases + an automated accessibility gate | Pending |
 
