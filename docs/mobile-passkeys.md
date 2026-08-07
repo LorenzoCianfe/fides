@@ -107,6 +107,42 @@ native module is missing it says a development build is required, and shows the
 domain the bundle was built against, so a mismatch between the app and the API
 is visible on the device itself.
 
+## Device verification checklist
+
+This is the one claim in the codebase that CI cannot reach: the on-device
+ceremony has **never been run on physical hardware**. Document shape, routing,
+and configuration are covered by tests; the ceremony itself is not, and cannot
+be from a runner. What follows is the sequence to close that, in order, with
+what "passed" looks like at each step so a partial result is still useful.
+
+**Before starting.** Since ADR-0028 the API refuses to boot without
+`ENCRYPTION_KEYS`. Set it alongside the variables above, or the first symptom
+will be a server that never starts rather than anything to do with passkeys:
+
+```bash
+node -e "console.log('dev:' + require('crypto').randomBytes(32).toString('base64'))"
+```
+
+| # | Step | Passed when |
+|---|---|---|
+| 1 | Start the API with `ENCRYPTION_KEYS` set and a named tunnel in front of it | `curl https://<host>/v1/health` returns `ok` over HTTPS |
+| 2 | Set `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, and the app identifiers; restart | `curl https://<host>/.well-known/apple-app-site-association` returns JSON, not 404 |
+| 3 | Same for Android | `curl https://<host>/.well-known/assetlinks.json` lists the fingerprint of the certificate that will actually sign the build |
+| 4 | Build a **development build** against the same hostname (`expo run:ios` / `run:android`) | The app launches and its sign-in screen reports the domain it was built against |
+| 5 | Register a new account and verify the email | The verification code arrives in the API log (console adapter) and is accepted |
+| 6 | **Enrol a passkey** | The platform sheet opens, biometry succeeds, and the server accepts the attestation — this is the first thing CI has never proven |
+| 7 | Sign out, then **sign in with the passkey** | The assertion is accepted and a session is issued |
+| 8 | Have an admin fund the account, then **send a transfer** | The SCA step-up sheet opens as a *second* ceremony, and the transfer posts |
+| 9 | Check the balance and statement on both sides | Balances moved; the statement row appears (it is an async projection, so allow a moment) |
+
+Step 8 is the one worth being deliberate about: it is a different ceremony type
+(`sca`, action-hashed and dynamically linked) from step 6/7, so passing 7 does
+not imply passing 8. If only one thing can be tested, test 8.
+
+**Record the outcome** in `security.md` and in the handoff's gap register either
+way. A failure that is written down is more valuable than an untested claim, and
+the troubleshooting table below maps most failures to a specific cause.
+
 ## What still works without any of this
 
 Everything that is not a passkey ceremony. Running against a local API over
