@@ -11,6 +11,7 @@ import {
   AdminPasswordChangeRequestSchema,
   AdminTotpResetRequestSchema,
   AdminUserIdParamsSchema,
+  AuditAnchorVerifyRequestSchema,
   AuditQuerySchema,
   PaginationQuerySchema,
   PendingActionDecisionSchema,
@@ -51,6 +52,8 @@ export class AdminPaginationQueryDto extends createZodDto(PaginationQuerySchema)
 export class AdminLedgerAccountParamsDto extends createZodDto(AdminLedgerAccountParamsSchema) {}
 
 export class AdminAuditQueryDto extends createZodDto(AuditQuerySchema) {}
+
+export class AuditAnchorVerifyRequestDto extends createZodDto(AuditAnchorVerifyRequestSchema) {}
 
 export class AdminFundingRequestDto extends createZodDto(AdminFundingRequestSchema) {}
 

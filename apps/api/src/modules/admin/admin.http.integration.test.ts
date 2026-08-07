@@ -1,6 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 import { seedAdmin, signInAdmin, type AdminSession } from '../../../test/admin';
@@ -14,7 +14,9 @@ import { generateTotp } from '../../shared/crypto/totp';
 import { OutboxDispatcher } from '../../shared/outbox/outbox.dispatcher';
 import { NOTIFICATIONS } from '../../shared/tokens';
 import { AuditAction } from '../audit/application/audit-actions';
+import { AuditAnchorService } from '../audit/application/audit-anchor.service';
 import { AuditService } from '../audit/application/audit.service';
+import { auditAnchors } from '../audit/infra/audit.schema';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
 import { AdminSessionService } from './application/admin-session.service';
 import { admins } from './infra/admin.schema';
@@ -400,6 +402,111 @@ describe('admin read-only views', () => {
       .expect(200);
     expect(verified.body).toMatchObject({ ok: true, brokenAtSeq: null });
     expect(verified.body.count).toBeGreaterThan(0);
+    // Nothing has been anchored yet, and that is reported as "no claim checked"
+    // rather than as safety (ADR-0031).
+    expect(verified.body.tail).toMatchObject({ status: 'unanchored', anchoredSeq: null });
+  });
+
+  it('reports the tail against the anchors, and catches a truncation the chain cannot', async () => {
+    const session = await signInSuper();
+    await enrolCustomer('alice@example.com');
+    await app.get(AuditAnchorService).publish();
+
+    const anchored = await request(server)
+      .get('/v1/admin/audit/verify')
+      .set('Authorization', `Bearer ${session.token}`)
+      .expect(200);
+    expect(anchored.body.tail).toMatchObject({ status: 'intact' });
+    expect(anchored.body.ok).toBe(true);
+
+    // Delete the newest records the way someone who can already bypass the
+    // append-only trigger would. The chain alone is blind to this.
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER audit_log_append_only`);
+    await db.execute(
+      sql`DELETE FROM audit_log WHERE seq IN (SELECT seq FROM audit_log ORDER BY seq DESC LIMIT 2)`,
+    );
+    await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER audit_log_append_only`);
+
+    const truncated = await request(server)
+      .get('/v1/admin/audit/verify')
+      .set('Authorization', `Bearer ${session.token}`)
+      .expect(200);
+    // The chain still walks cleanly — that is the whole point of the anchor.
+    expect(truncated.body.brokenAtSeq).toBeNull();
+    expect(truncated.body.tail.status).toBe('truncated');
+    expect(truncated.body.ok).toBe(false);
+  });
+
+  it('verifies an anchor supplied from outside, which survives losing the table', async () => {
+    const session = await signInSuper();
+    await enrolCustomer('alice@example.com');
+    await app.get(AuditAnchorService).publish();
+    const [anchor] = await db.select().from(auditAnchors);
+
+    // The scenario the design exists for: the records and the anchors that
+    // would have betrayed their removal are deleted together.
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER audit_log_append_only`);
+    await db.execute(
+      sql`DELETE FROM audit_log WHERE seq IN (SELECT seq FROM audit_log ORDER BY seq DESC LIMIT 2)`,
+    );
+    await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER audit_log_append_only`);
+    await db.execute(sql`TRUNCATE TABLE audit_anchors`);
+
+    const blind = await request(server)
+      .get('/v1/admin/audit/verify')
+      .set('Authorization', `Bearer ${session.token}`)
+      .expect(200);
+    expect(blind.body.tail.status).toBe('unanchored');
+
+    // The copy an operator kept still convicts.
+    const external = await request(server)
+      .post('/v1/admin/audit/verify-anchor')
+      .set('Authorization', `Bearer ${session.token}`)
+      .send({ payload: anchor!.payload, signature: anchor!.signature })
+      .expect(200);
+    expect(external.body).toMatchObject({ signatureValid: true, status: 'truncated' });
+  });
+
+  it('refuses a tampered anchor rather than believing the claim inside it', async () => {
+    const session = await signInSuper();
+    await enrolCustomer('alice@example.com');
+    await app.get(AuditAnchorService).publish();
+    const [anchor] = await db.select().from(auditAnchors);
+
+    const forged = await request(server)
+      .post('/v1/admin/audit/verify-anchor')
+      .set('Authorization', `Bearer ${session.token}`)
+      .send({
+        payload: anchor!.payload.replace(/"seq":\d+/, '"seq":9999'),
+        signature: anchor!.signature,
+      })
+      .expect(200);
+    expect(forged.body).toMatchObject({ signatureValid: false, status: 'anchor_unverifiable' });
+
+    // A payload that is not an anchor at all is a request error, not a verdict.
+    await request(server)
+      .post('/v1/admin/audit/verify-anchor')
+      .set('Authorization', `Bearer ${session.token}`)
+      .send({ payload: 'not-json', signature: anchor!.signature })
+      .expect(400);
+  });
+
+  it('keeps the anchor surface behind audit.read like the rest of the trail', async () => {
+    await seedAdmin(db as TestDatabase, {
+      id: AUDITOR_ID,
+      email: 'agent2@fides.local',
+      role: 'support_agent',
+      password: MAKER_PASSWORD,
+    });
+    const agent = await signInAdmin(server, {
+      email: 'agent2@fides.local',
+      password: MAKER_PASSWORD,
+    });
+    await request(server)
+      .post('/v1/admin/audit/verify-anchor')
+      .set('Authorization', `Bearer ${agent.token}`)
+      .send({ payload: '{}', signature: 'x' })
+      .expect(403);
   });
 });
 
@@ -745,10 +852,11 @@ describe('admin password change (HTTP)', () => {
     expect(await app.get(AuditService).verify()).toMatchObject({ ok: true });
   });
 
-  it('needs both factors, and rejects a code already spent signing in', async () => {
+  it('needs both factors, and refuses to spend one code twice', async () => {
     const session = await signInSuper();
 
-    // A stolen session alone is not enough: the current password is required.
+    // A stolen session alone is not enough: the current password is required,
+    // and it is checked before the code is looked at.
     await request(server)
       .post('/v1/admin/me/password')
       .set('Authorization', `Bearer ${session.token}`)
@@ -759,28 +867,40 @@ describe('admin password change (HTTP)', () => {
       })
       .expect(401);
 
-    // Nor is the password plus a replayed code — the guard is shared with login.
-    await request(server)
-      .post('/v1/admin/me/password')
-      .set('Authorization', `Bearer ${session.token}`)
-      .send({
-        currentPassword: BOOTSTRAP_PASSWORD,
-        newPassword: ROTATED_PASSWORD,
-        totpCode: generateTotp(session.secret, Date.now()),
-      })
-      .expect(401);
-
-    // A new password shorter than the minimum never reaches the factors.
+    // A new password shorter than the minimum never reaches the factors at all.
     await request(server)
       .post('/v1/admin/me/password')
       .set('Authorization', `Bearer ${session.token}`)
       .send({ currentPassword: BOOTSTRAP_PASSWORD, newPassword: 'short', totpCode: '123456' })
       .expect(400);
 
-    // Unchanged throughout.
+    // Spend one code on a real rotation...
+    const code = nextStepCode(session.secret);
+    await request(server)
+      .post('/v1/admin/me/password')
+      .set('Authorization', `Bearer ${session.token}`)
+      .send({ currentPassword: BOOTSTRAP_PASSWORD, newPassword: ROTATED_PASSWORD, totpCode: code })
+      .expect(200);
+
+    // ...and the same code cannot be spent again. Asserted by replaying the code
+    // this test knows was accepted, rather than by minting one for "now" and
+    // assuming the wall clock has not crossed a 30-second step in between —
+    // which is a race, and one that fails open by letting a genuinely newer code
+    // through.
+    await request(server)
+      .post('/v1/admin/me/password')
+      .set('Authorization', `Bearer ${session.token}`)
+      .send({
+        currentPassword: ROTATED_PASSWORD,
+        newPassword: 'a-fourth-sufficiently-long-password',
+        totpCode: code,
+      })
+      .expect(401);
+
+    // The first rotation stuck; the replayed second one did not.
     await request(server)
       .post('/v1/admin/auth/login')
-      .send({ email: BOOTSTRAP_EMAIL, password: BOOTSTRAP_PASSWORD })
+      .send({ email: BOOTSTRAP_EMAIL, password: ROTATED_PASSWORD })
       .expect(200);
   });
 
@@ -1050,6 +1170,7 @@ describe('admin OpenAPI surface', () => {
         '/v1/admin/ledger/accounts/{ledgerAccountId}',
         '/v1/admin/audit',
         '/v1/admin/audit/verify',
+        '/v1/admin/audit/verify-anchor',
         '/v1/admin/me/password',
         '/v1/admin/funding-requests',
         '/v1/admin/funding-requests/{actionId}/approve',

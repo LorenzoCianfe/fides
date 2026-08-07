@@ -1,10 +1,11 @@
 import { Global, Module } from '@nestjs/common';
 import { ENV, type Env } from '../config/env';
 import { KeyringEncryption, parseKeyring } from './crypto/encryption';
+import { Ed25519Signing, parseSigningKeyring } from './crypto/signing';
 import { UuidV7Generator } from './ids/uuid-v7';
 import { ConsoleNotificationAdapter } from './notifications/console-notification.adapter';
 import { SystemClock } from './time/system-clock';
-import { CLOCK, ENCRYPTION, ID_GENERATOR, NOTIFICATIONS } from './tokens';
+import { CLOCK, ENCRYPTION, ID_GENERATOR, NOTIFICATIONS, SIGNING } from './tokens';
 
 /** Binds the shared, framework-free platform services into the container. */
 @Global()
@@ -24,7 +25,15 @@ import { CLOCK, ENCRYPTION, ID_GENERATOR, NOTIFICATIONS } from './tokens';
         new KeyringEncryption(parseKeyring(env.ENCRYPTION_KEYS)),
       inject: [ENV],
     },
+    {
+      // Built at boot for the same reason: an unusable anchor key must fail
+      // startup, not a background pass whose failure is only logged (ADR-0031).
+      provide: SIGNING,
+      useFactory: (env: Env): Ed25519Signing =>
+        new Ed25519Signing(parseSigningKeyring(env.AUDIT_ANCHOR_KEYS)),
+      inject: [ENV],
+    },
   ],
-  exports: [ID_GENERATOR, CLOCK, NOTIFICATIONS, ENCRYPTION],
+  exports: [ID_GENERATOR, CLOCK, NOTIFICATIONS, ENCRYPTION, SIGNING],
 })
 export class SharedModule {}

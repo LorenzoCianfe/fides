@@ -74,3 +74,43 @@ export const auditLog = pgTable(
 );
 
 export type AuditLogRow = typeof auditLog.$inferSelect;
+
+/**
+ * Periodic signed statements of the chain's head (ADR-0031), closing the
+ * truncation gap ADR-0024 deferred: the chain proves nothing it *contains* was
+ * altered, but deleting the newest rows leaves a shorter chain that still
+ * verifies perfectly.
+ *
+ * **This table is convenience, not the control.** The same attacker who can
+ * truncate `audit_log` can delete these rows alongside it. What it buys is
+ * automatic, cheap detection on every `verify()` call, without an operator
+ * having to fetch anything. The guarantee lives in the copy of each anchor
+ * emitted to the process log, which leaves the host and cannot be retracted —
+ * see `AuditAnchorPublisher`.
+ *
+ * Deliberately NOT hash-chained itself. Anchors are independent signed claims,
+ * each verifiable alone; chaining them would mean losing every later anchor when
+ * an early one was deleted, which is the opposite of what is wanted here.
+ */
+export const auditAnchors = pgTable(
+  'audit_anchors',
+  {
+    id: uuid('id').primaryKey(),
+    /** The chain position this anchor attests to. */
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    /** The `audit_log.hash` at that position, as it stood when signed. */
+    hash: text('hash').notNull(),
+    publishedAt: timestamp('published_at', { withTimezone: true }).notNull(),
+    /** The exact canonical string that was signed; kept so verification never re-derives it. */
+    payload: text('payload').notNull(),
+    /** Self-describing `fsig$v1$keyId$signature`, naming the key that made it. */
+    signature: text('signature').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    seqIdx: index('audit_anchors_seq_idx').on(table.seq),
+    publishedIdx: index('audit_anchors_published_idx').on(table.publishedAt),
+  }),
+);
+
+export type AuditAnchorRow = typeof auditAnchors.$inferSelect;

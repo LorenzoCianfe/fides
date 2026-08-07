@@ -10,6 +10,7 @@ import { DEFAULT_TOTP_CONFIG } from '../../shared/crypto/totp';
 import { AccountsModule } from '../accounts/accounts.module';
 import { WalletResolver } from '../accounts/application/wallet-resolver';
 import { AuditModule } from '../audit/audit.module';
+import { AuditAnchorService } from '../audit/application/audit-anchor.service';
 import { AuditService } from '../audit/application/audit.service';
 import { LedgerModule } from '../ledger/ledger.module';
 import { LedgerStore } from '../ledger/infra/ledger.repository';
@@ -127,9 +128,13 @@ function adminIdentityConfigFromEnv(env: Env): AdminIdentityConfig {
     },
     {
       provide: AdminReadService,
-      useFactory: (db: Database, ledger: LedgerStore, clock: EventClock): AdminReadService =>
-        new AdminReadService(db, ledger, clock),
-      inject: [DRIZZLE, LedgerStore, CLOCK],
+      useFactory: (
+        db: Database,
+        ledger: LedgerStore,
+        clock: EventClock,
+        anchors: AuditAnchorService,
+      ): AdminReadService => new AdminReadService(db, ledger, clock, anchors),
+      inject: [DRIZZLE, LedgerStore, CLOCK, AuditAnchorService],
     },
     {
       provide: PendingAdminActionService,

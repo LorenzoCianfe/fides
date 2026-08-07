@@ -14,3 +14,6 @@ export const NOTIFICATIONS = Symbol('NOTIFICATIONS');
 
 /** Field-level EncryptionPort (local keyring adapter; KMS-shaped, ADR-0028). */
 export const ENCRYPTION = Symbol('ENCRYPTION');
+
+/** Detached SigningPort for audit anchors (local Ed25519 keyring; ADR-0031). */
+export const SIGNING = Symbol('SIGNING');

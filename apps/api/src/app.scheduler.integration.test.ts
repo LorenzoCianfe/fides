@@ -5,6 +5,8 @@ import { createTestDb, resetDb, type TestDatabase } from '../test/db';
 import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
 import { loadEnv } from './config/env';
+import { AuditService } from './modules/audit/application/audit.service';
+import { auditAnchors } from './modules/audit/infra/audit.schema';
 import { webauthnChallenges } from './modules/identity/infra/auth.schema';
 import { UuidV7Generator } from './shared/ids/uuid-v7';
 
@@ -24,6 +26,7 @@ beforeAll(async () => {
   process.env.THROTTLE_ENABLED = 'false';
   process.env.OUTBOX_DISPATCH_INTERVAL_MS = '100';
   process.env.CLEANUP_INTERVAL_MS = '150';
+  process.env.AUDIT_ANCHOR_INTERVAL_MS = '150';
 
   await resetDb(db as TestDatabase);
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -55,5 +58,28 @@ describe('background schedulers (integration)', () => {
       remaining = (await db.select().from(webauthnChallenges)).length;
     }
     expect(remaining).toBe(0);
+  });
+
+  it('publishes an audit anchor on the armed interval', async () => {
+    // A control that is implemented but never actually runs is the failure mode
+    // this asserts against: nothing else here proves the interval is armed.
+    const audit = app.get(AuditService);
+    await db.transaction((tx) =>
+      audit.append(tx, {
+        actorType: 'system',
+        actorId: null,
+        action: 'test.anchor.trigger',
+        resourceType: 'test',
+        resourceId: 'anchor-1',
+      }),
+    );
+
+    const deadline = Date.now() + 10_000;
+    let anchors = 0;
+    while (anchors === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      anchors = (await db.select().from(auditAnchors)).length;
+    }
+    expect(anchors).toBeGreaterThan(0);
   });
 });

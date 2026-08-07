@@ -8,6 +8,11 @@ import {
 import { and, asc, desc, eq, lt, or, sql } from 'drizzle-orm';
 import type { Database } from '../../../database/db.types';
 import { accounts, wallets } from '../../accounts/infra/accounts.schema';
+import type {
+  AuditTailVerification,
+  ExternalAnchorVerification,
+} from '../../audit/application/audit-anchor.service';
+import { AuditAnchorService } from '../../audit/application/audit-anchor.service';
 import {
   verifyAuditChain,
   type AuditActorType,
@@ -118,6 +123,7 @@ export class AdminReadService {
     private readonly db: Database,
     private readonly ledger: LedgerStore,
     private readonly clock: EventClock,
+    private readonly anchors: AuditAnchorService,
   ) {}
 
   /** The customer directory, newest first, keyset-paginated over `(created_at, id)`. */
@@ -299,15 +305,53 @@ export class AdminReadService {
   }
 
   /**
-   * Walk the whole chain from genesis and confirm its integrity (ADR-0024).
+   * Walk the whole chain from genesis, and check its tail against the anchors
+   * (ADR-0024, ADR-0031).
    *
    * Deliberately not range-scoped: only a walk from `seq` 0 can establish that
    * the sequence is gap-free, and a "verified" answer over an arbitrary window
    * would be a weaker claim than the word implies.
+   *
+   * The two checks answer different questions and neither subsumes the other.
+   * The chain walk catches any edit or removal *within* the trail. It cannot
+   * catch truncation — deleting the newest records leaves a shorter chain that
+   * verifies perfectly — which is what the anchor comparison is for.
    */
-  async verifyAudit(): Promise<AuditVerificationResult & { readonly verifiedAt: Date }> {
+  async verifyAudit(): Promise<
+    AuditVerificationResult & {
+      readonly tail: AuditTailVerification;
+      readonly verifiedAt: Date;
+    }
+  > {
     const rows = await this.db.select().from(auditLog).orderBy(asc(auditLog.seq));
-    return { ...verifyAuditChain(rows), verifiedAt: this.clock.now() };
+    const chain = verifyAuditChain(rows);
+    const tail = await this.anchors.verifyTail();
+    return {
+      ...chain,
+      // `unanchored` is not a failure: it means no claim was available to check,
+      // which is the honest state of a system that has not published yet. The
+      // status field carries that nuance; collapsing it into `ok: false` would
+      // cry wolf on every fresh deployment.
+      ok: chain.ok && tail.status !== 'truncated' && tail.status !== 'anchor_unverifiable',
+      tail,
+      verifiedAt: this.clock.now(),
+    };
+  }
+
+  /**
+   * Check the trail against an anchor an operator supplies from the log archive.
+   *
+   * This is the path that survives an attacker who deleted the anchor rows along
+   * with the records they attested to, and it is why the anchor signature is
+   * asymmetric: the operator needs to verify without holding anything that could
+   * mint a replacement.
+   */
+  async verifyAuditAnchor(
+    payload: string,
+    signature: string,
+  ): Promise<ExternalAnchorVerification & { readonly verifiedAt: Date }> {
+    const result = await this.anchors.verifyAgainstAnchor(payload, signature);
+    return { ...result, verifiedAt: this.clock.now() };
   }
 
   /** Count of records on the trail, for the verification summary. */

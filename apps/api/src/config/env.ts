@@ -119,6 +119,28 @@ export const envSchema = z
      */
     ENCRYPTION_KEYS: z.string().min(1),
     /**
+     * Ed25519 signing keyring for audit anchors (ADR-0031), as comma-separated
+     * `keyId:base64Pkcs8` pairs. The first is the primary and signs new anchors;
+     * the rest stay usable so anchors published under a rotated-out key remain
+     * verifiable, since every signature names the key that made it.
+     *
+     * **Required with no default, for the same reason as `ENCRYPTION_KEYS`.** A
+     * default would be a published key — and here that is worse than useless,
+     * because a published key lets anyone forge an anchor for a truncated chain.
+     * Making it optional would be the other failure: the system would appear to
+     * anchor and would not, which is precisely the silent downgrade
+     * `security.md` tenet 6 forbids. Generate one with
+     * `node -e "console.log(require('crypto').generateKeyPairSync('ed25519').privateKey.export({format:'der',type:'pkcs8'}).toString('base64'))"`.
+     */
+    AUDIT_ANCHOR_KEYS: z.string().min(1),
+    /**
+     * How often the chain head is signed and published. This is the truncation
+     * window: records appended since the last anchor can still be deleted
+     * undetectably, so the interval is the guarantee's resolution rather than a
+     * performance knob.
+     */
+    AUDIT_ANCHOR_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
+    /**
      * Consecutive failed admin authentication attempts before the account locks
      * (ADR-0029). Counts both factors: a wrong password and a wrong TOTP code
      * advance the same counter, because an attacker past the password step is
