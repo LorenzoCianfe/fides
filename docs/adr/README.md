@@ -31,3 +31,5 @@ Each ADR captures one significant decision, its context, and its consequences. A
 | [0025](0025-admin-rbac-mfa-four-eyes.md) | Admin identity, RBAC, MFA, and four-eyes on admin funding (refines 0011) | Accepted |
 | [0026](0026-dependency-audit-remediation.md) | Dependency audit remediation: scoped transitive overrides and the brace-expansion patch (refines 0013) | Accepted |
 | [0027](0027-client-token-transport-security-headers.md) | Client token transport, CSRF defence, security headers, and native app association (refines 0020, 0021) | Accepted |
+| [0028](0028-field-level-encryption-totp-secrets.md) | Field-level encryption: a KMS-shaped keyring, applied first to admin TOTP secrets (refines 0010, 0025) | Accepted |
+| [0029](0029-admin-login-lockout-denied-attempt-audit.md) | Per-account admin lockout and auditing denied attempts (refines 0024, 0025) | Accepted |

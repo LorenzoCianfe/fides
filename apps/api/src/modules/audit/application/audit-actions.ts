@@ -30,6 +30,17 @@ export const AuditAction = {
   AdminSessionRevoked: 'admin.session.revoked',
   /** An admin activated their TOTP second factor. */
   AdminMfaEnrolled: 'admin.mfa.enrolled',
+  /**
+   * A back-office authentication attempt was denied (ADR-0029). The exception
+   * to ADR-0024's "audit inside the action's transaction": a denial has no
+   * transaction to be atomic with — the TOTP step deliberately rolls its own
+   * back — so this is written in a separate transaction immediately after.
+   * Recorded only for a *known* admin, since an unknown email is PII and has no
+   * resource to reference; unknown-address volume is bounded by the throttle.
+   */
+  AdminAuthDenied: 'admin.auth.denied',
+  /** Consecutive failures reached the threshold and the account locked. */
+  AdminLocked: 'admin.locked',
   /** A maker requested an admin funding credit (no money moved yet). */
   AdminFundingRequested: 'admin_funding.requested',
   /** A checker approved a funding request; the credit posted in the same transaction. */

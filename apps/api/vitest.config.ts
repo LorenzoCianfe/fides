@@ -5,7 +5,7 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts'],
     globals: true,
-    setupFiles: ['reflect-metadata'],
+    setupFiles: ['reflect-metadata', './test/setup-env.ts'],
     // Boots one Postgres container for the run and applies migrations. Requires
     // a running Docker daemon (integration tests run under `pnpm test`).
     globalSetup: ['./test/global-setup.ts'],

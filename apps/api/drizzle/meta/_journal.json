@@ -85,6 +85,13 @@
       "when": 1785310318169,
       "tag": "0011_cookie_transport_csrf",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786011777106,
+      "tag": "0012_admin_lockout",
+      "breakpoints": true
     }
   ]
 }

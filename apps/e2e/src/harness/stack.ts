@@ -245,6 +245,11 @@ export async function startStack(): Promise<Stack> {
       THROTTLE_ENABLED: 'false',
       ADMIN_BOOTSTRAP_EMAIL: BOOTSTRAP_ADMIN.email,
       ADMIN_BOOTSTRAP_PASSWORD: BOOTSTRAP_ADMIN.password,
+      // Required with no default (ADR-0028): a default would be a published
+      // key, and falling back to plaintext when unset is the silent downgrade
+      // the requirement exists to prevent. A fixed all-zeros key here is
+      // self-evidently not a secret.
+      ENCRYPTION_KEYS: `e2e:${Buffer.alloc(32, 0).toString('base64')}`,
     },
     'api',
   );

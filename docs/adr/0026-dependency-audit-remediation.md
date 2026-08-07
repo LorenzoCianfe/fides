@@ -118,3 +118,33 @@ exit condition is the React Native major, which is the Expo SDK move, which is
 the same work as the open [PR #26](https://github.com/LorenzoCianfe/fides/pull/26)
 and belongs to Phase 7. It should be retired as part of that move and not
 attempted before it.
+
+## Addendum — 2026-08-06: `js-yaml` override moved to `>=4.3.1`
+
+`GHSA-5p4m-2wfm-xmqj` was published against `js-yaml >=4.0.0 <4.3.1` — quadratic
+CPU consumption in `!!omap` resolution, the `CVE-2026-59870` fix not having been
+backported. The override above forced `>=4.3.0`, so **`4.3.0` became vulnerable
+in place**: the same advisory-drift pattern that moved the `brace-expansion` pin,
+against the same line this ADR already forced once.
+
+The decision is unchanged; only the range moved, to
+`"js-yaml@>=4.0.0 <4.3.1": ">=4.3.1"`. `4.3.1` was already published and already
+present in the tree for other consumers, so nothing had to wait on upstream.
+
+**The range-scoping rule earned its keep here, and it is worth being precise
+about why.** Had the override been keyed on the bare package name, forcing
+`>=4.3.0` would have silently kept satisfying itself while the tree sat on a
+version the advisory covered — the gate would have gone red with no indication
+that an existing override was the thing now out of date. Because the key carries
+the advisory's own vulnerable range, `4.3.0` simply stopped matching it, which
+is what made the finding legible as "an override needs moving" rather than "a
+new package is vulnerable".
+
+It also confirms the standing hazard this ADR was written around: a pinned-forward
+transitive is not fixed forever, it is fixed until the next advisory widens the
+range past the pin. Both forced lines (`brace-expansion`, `js-yaml`) have now
+drifted once each. Treat every entry in `overrides` as something to re-check
+whenever the gate turns red, before looking for a new culprit. Note that the
+sibling `js-yaml@3.15.1` in the tree is untouched, as intended — this advisory's
+range does not reach it, and an unscoped override would have dragged it across
+the 3→4 boundary that removed `safeLoad`.

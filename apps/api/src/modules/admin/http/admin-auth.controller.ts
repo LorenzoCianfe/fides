@@ -35,9 +35,10 @@ export class AdminAuthController {
   @HttpCode(200)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async login(
+    @Headers('x-correlation-id') correlationId: string | undefined,
     @Body(new ZodValidationPipe(AdminLoginRequestDto)) body: AdminLoginRequestDto,
   ): Promise<AdminLoginResponseDto> {
-    const challenge = await this.identity.login(body.email, body.password);
+    const challenge = await this.identity.login(body.email, body.password, correlationId);
     return {
       challengeToken: challenge.challengeToken,
       mfaEnrolled: challenge.mfaEnrolled,

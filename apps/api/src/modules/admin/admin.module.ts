@@ -4,7 +4,8 @@ import type { EventClock, IdGenerator } from '@fides/domain';
 import { ENV, type Env } from '../../config/env';
 import { DRIZZLE } from '../../database/database.module';
 import type { Database } from '../../database/db.types';
-import { CLOCK, ID_GENERATOR } from '../../shared/tokens';
+import { CLOCK, ENCRYPTION, ID_GENERATOR } from '../../shared/tokens';
+import type { EncryptionPort } from '../../shared/crypto/encryption';
 import { DEFAULT_TOTP_CONFIG } from '../../shared/crypto/totp';
 import { AccountsModule } from '../accounts/accounts.module';
 import { WalletResolver } from '../accounts/application/wallet-resolver';
@@ -52,6 +53,8 @@ function adminIdentityConfigFromEnv(env: Env): AdminIdentityConfig {
     issuer: env.APP_NAME,
     loginChallengeTtlMs: ADMIN_LOGIN_CHALLENGE_TTL_MS,
     totp: DEFAULT_TOTP_CONFIG,
+    lockoutThreshold: env.ADMIN_LOCKOUT_THRESHOLD,
+    lockoutDurationMs: env.ADMIN_LOCKOUT_DURATION_MS,
   };
 }
 
@@ -108,10 +111,19 @@ function adminIdentityConfigFromEnv(env: Env): AdminIdentityConfig {
         clock: EventClock,
         audit: AuditService,
         sessions: AdminSessionService,
+        encryption: EncryptionPort,
         env: Env,
       ): AdminIdentityService =>
-        new AdminIdentityService(db, ids, clock, audit, sessions, adminIdentityConfigFromEnv(env)),
-      inject: [DRIZZLE, ID_GENERATOR, CLOCK, AuditService, AdminSessionService, ENV],
+        new AdminIdentityService(
+          db,
+          ids,
+          clock,
+          audit,
+          sessions,
+          encryption,
+          adminIdentityConfigFromEnv(env),
+        ),
+      inject: [DRIZZLE, ID_GENERATOR, CLOCK, AuditService, AdminSessionService, ENCRYPTION, ENV],
     },
     {
       provide: AdminReadService,

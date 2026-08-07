@@ -3,6 +3,7 @@ import {
   bigint,
   check,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -46,10 +47,14 @@ export const admins = pgTable(
     /** scrypt$N$r$p$salt$hash — never a bare digest. */
     passwordHash: text('password_hash').notNull(),
     /**
-     * Base32 TOTP secret. Stored in PLAINTEXT because verification needs the
-     * secret itself — the one secret in the system that cannot be hashed. An
-     * accepted interim gap until field-level/KMS encryption (security.md §6.2);
-     * NULL until the admin enrols at first login.
+     * Base32 TOTP secret, held as an AES-256-GCM envelope (ADR-0028). It is the
+     * one secret in the system that cannot be hashed — RFC 6238 recomputes codes
+     * from the secret itself — so it is encrypted instead, with the admin id as
+     * additional authenticated data so a ciphertext cannot be grafted onto
+     * another row. NULL until the admin enrols at first login.
+     *
+     * Reads still tolerate a bare base32 value: rows written before ADR-0028
+     * are plaintext, and are re-sealed in place the next time they verify.
      */
     totpSecret: text('totp_secret'),
     totpEnrolledAt: timestamp('totp_enrolled_at', { withTimezone: true }),
@@ -59,6 +64,16 @@ export const admins = pgTable(
      * inside its acceptance window.
      */
     lastTotpStep: bigint('last_totp_step', { mode: 'number' }),
+    /**
+     * Consecutive failed authentication attempts across *both* factors
+     * (ADR-0029), reset to zero by any successful sign-in. Incremented in its
+     * own transaction, because the TOTP step deliberately rolls its transaction
+     * back on a wrong code so a typo does not also spend the login challenge —
+     * an increment written inside that transaction would roll back with it.
+     */
+    failedLoginAttempts: integer('failed_login_attempts').notNull().default(0),
+    /** Set when the threshold is reached; authentication fails until it passes. */
+    lockedUntil: timestamp('locked_until', { withTimezone: true }),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

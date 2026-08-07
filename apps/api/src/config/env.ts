@@ -106,6 +106,27 @@ export const envSchema = z
     /** Back-office session lifetimes: 30-minute sliding idle, 8-hour absolute cap. */
     ADMIN_SESSION_IDLE_TTL_MS: z.coerce.number().int().positive().optional(),
     ADMIN_SESSION_ABSOLUTE_TTL_MS: z.coerce.number().int().positive().optional(),
+    /**
+     * Field-level encryption keyring (ADR-0028), as comma-separated
+     * `keyId:base64Key` pairs of 32 bytes each. The first pair is the primary
+     * and encrypts new values; the rest stay usable so a key can be rotated
+     * without a migration, since every ciphertext names the key that sealed it.
+     *
+     * Deliberately **required with no default**: a default would be a published
+     * key, and falling back to plaintext when unset would be exactly the silent
+     * security downgrade tenet 6 of `security.md` forbids. Generate one with
+     * `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
+     */
+    ENCRYPTION_KEYS: z.string().min(1),
+    /**
+     * Consecutive failed admin authentication attempts before the account locks
+     * (ADR-0029). Counts both factors: a wrong password and a wrong TOTP code
+     * advance the same counter, because an attacker past the password step is
+     * further along, not safer.
+     */
+    ADMIN_LOCKOUT_THRESHOLD: z.coerce.number().int().positive().default(5),
+    /** How long an admin account stays locked once the threshold is reached. */
+    ADMIN_LOCKOUT_DURATION_MS: z.coerce.number().int().positive().default(900_000),
   })
   .superRefine((env, ctx) => {
     // Browsers silently drop `SameSite=None` cookies that are not `Secure`, so
