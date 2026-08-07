@@ -11,6 +11,8 @@ import {
   AdminMfaEnrolRequestSchema,
   AdminMfaEnrolResponseSchema,
   AdminMfaVerifyRequestSchema,
+  AdminPasswordChangeRequestSchema,
+  AdminPasswordChangeResponseSchema,
   AdminProfileSchema,
   AdminSessionResponseSchema,
   AdminStatusRequestSchema,
@@ -26,11 +28,13 @@ import {
 import {
   AdminFundingApprovalResponseSchema,
   AdminFundingRequestSchema,
+  AdminTotpResetApprovalResponseSchema,
+  AdminTotpResetRequestSchema,
   PendingActionDecisionSchema,
   PendingActionPageSchema,
   PendingActionQuerySchema,
   PendingActionSchema,
-} from './funding';
+} from './four-eyes';
 
 const TAG_ADMIN_AUTH = 'admin-auth';
 const TAG_ADMIN_STAFF = 'admin-staff';
@@ -141,6 +145,23 @@ export function registerAdminPaths(registry: OpenAPIRegistry): void {
     responses: {
       200: jsonResponse('The admin profile', AdminProfileSchema),
       401: errorResponse('Not authenticated'),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/v1/admin/me/password',
+    summary: 'Rotate your own password',
+    description:
+      'Re-proves both factors — the current password and a fresh TOTP code — and revokes every other session the admin holds, keeping the calling one. Available to any authenticated admin; no permission gates rotating your own credential.',
+    tags: [TAG_ADMIN_AUTH],
+    security: bearer,
+    request: { body: jsonBody(AdminPasswordChangeRequestSchema) },
+    responses: {
+      200: jsonResponse('Password changed', AdminPasswordChangeResponseSchema),
+      400: errorResponse('Too short, or unchanged from the current password'),
+      401: errorResponse('Wrong current password or verification code'),
+      429: errorResponse('Rate limited'),
     },
   });
 
@@ -345,10 +366,15 @@ export function registerAdminPaths(registry: OpenAPIRegistry): void {
     },
   });
 
+  // Decisions are type-scoped rather than generic. The permission a decision
+  // needs depends on the row's type, which a route-level annotation cannot know,
+  // so the alternative would be moving the decisive authorization check off the
+  // route and into the service — hiding it from exactly the diff that should
+  // show it. The unified queue above stays the place to *read* both types.
   registry.registerPath({
     method: 'post',
-    path: '/v1/admin/pending-actions/{actionId}/approve',
-    summary: 'Approve a pending action and execute it (checker)',
+    path: '/v1/admin/funding-requests/{actionId}/approve',
+    summary: 'Approve a funding request and execute it (checker)',
     description:
       'The credit posts inside the same transaction that decides the request, so a concurrent double-approval cannot post twice and a failed posting leaves the request pending. The maker cannot approve their own request.',
     tags: [TAG_ADMIN_FOUR_EYES],
@@ -360,7 +386,9 @@ export function registerAdminPaths(registry: OpenAPIRegistry): void {
     },
     responses: {
       201: jsonResponse('Approved and executed', AdminFundingApprovalResponseSchema),
-      400: errorResponse('Already decided, expired, or missing Idempotency-Key'),
+      400: errorResponse(
+        'Already decided, expired, not a funding request, or missing Idempotency-Key',
+      ),
       401: errorResponse('Not authenticated'),
       403: errorResponse('Role lacks admin_funding.approve, or the caller is the maker'),
       404: errorResponse('Pending action not found'),
@@ -370,8 +398,8 @@ export function registerAdminPaths(registry: OpenAPIRegistry): void {
 
   registry.registerPath({
     method: 'post',
-    path: '/v1/admin/pending-actions/{actionId}/reject',
-    summary: 'Reject a pending action (checker)',
+    path: '/v1/admin/funding-requests/{actionId}/reject',
+    summary: 'Reject a funding request (checker)',
     description: 'Records the decision; no money moves and the request cannot be revived.',
     tags: [TAG_ADMIN_FOUR_EYES],
     security: bearer,
@@ -381,9 +409,71 @@ export function registerAdminPaths(registry: OpenAPIRegistry): void {
     },
     responses: {
       200: jsonResponse('Rejected', PendingActionSchema),
-      400: errorResponse('Already decided'),
+      400: errorResponse('Already decided, or not a funding request'),
       401: errorResponse('Not authenticated'),
       403: errorResponse('Role lacks admin_funding.approve'),
+      404: errorResponse('Pending action not found'),
+    },
+  });
+
+  // --- Four-eyes second-factor reset (ADR-0030) -----------------------------
+  registry.registerPath({
+    method: 'post',
+    path: '/v1/admin/totp-resets',
+    summary: 'Request a reset of another operator’s second factor (maker)',
+    description:
+      'Files a request; the target’s credentials are untouched until a checker approves. Requires admin_totp_reset.request, which only compliance_officer holds — narrower than the funding maker half, because a reset hands over a back-office identity rather than crediting a customer.',
+    tags: [TAG_ADMIN_FOUR_EYES],
+    security: bearer,
+    request: { body: jsonBody(AdminTotpResetRequestSchema) },
+    responses: {
+      201: jsonResponse('Request filed and awaiting a checker', PendingActionSchema),
+      400: errorResponse('Validation failed'),
+      401: errorResponse('Not authenticated'),
+      403: errorResponse('Role lacks admin_totp_reset.request'),
+      404: errorResponse('Admin not found'),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/v1/admin/totp-resets/{actionId}/approve',
+    summary: 'Approve a second-factor reset and execute it (checker)',
+    description:
+      'Clears the target’s secret, enrolment, replay guard, and lockout, and revokes all of their live sessions — in the same transaction that decides the request. The maker cannot approve their own request, and no admin may approve a reset of their own factor: that would be a unilateral second-factor bypass.',
+    tags: [TAG_ADMIN_FOUR_EYES],
+    security: bearer,
+    request: {
+      params: z.object({ actionId: z.string().uuid() }),
+      body: jsonBody(PendingActionDecisionSchema),
+    },
+    responses: {
+      200: jsonResponse('Approved and executed', AdminTotpResetApprovalResponseSchema),
+      400: errorResponse('Already decided, expired, or not a reset request'),
+      401: errorResponse('Not authenticated'),
+      403: errorResponse(
+        'Role lacks admin_totp_reset.approve, or the caller is the maker or the target',
+      ),
+      404: errorResponse('Pending action not found'),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/v1/admin/totp-resets/{actionId}/reject',
+    summary: 'Reject a second-factor reset (checker)',
+    description: 'Records the decision; the target’s factor is untouched.',
+    tags: [TAG_ADMIN_FOUR_EYES],
+    security: bearer,
+    request: {
+      params: z.object({ actionId: z.string().uuid() }),
+      body: jsonBody(PendingActionDecisionSchema),
+    },
+    responses: {
+      200: jsonResponse('Rejected', PendingActionSchema),
+      400: errorResponse('Already decided, or not a reset request'),
+      401: errorResponse('Not authenticated'),
+      403: errorResponse('Role lacks admin_totp_reset.approve'),
       404: errorResponse('Pending action not found'),
     },
   });

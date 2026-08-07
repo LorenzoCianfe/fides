@@ -127,7 +127,7 @@ export async function fundCustomer(
     },
   });
 
-  await call(`/v1/admin/pending-actions/${action.id}/approve`, {
+  await call(`/v1/admin/funding-requests/${action.id}/approve`, {
     method: 'POST',
     token: checker.token,
     idempotencyKey: randomUUID(),

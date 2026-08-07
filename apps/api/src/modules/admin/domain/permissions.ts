@@ -27,6 +27,10 @@ export const AdminPermission = {
   AdminFundingRequest: 'admin_funding.request',
   /** Approve or reject an admin funding request (the checker half). */
   AdminFundingApprove: 'admin_funding.approve',
+  /** Initiate a reset of another operator's second factor (the maker half). */
+  AdminTotpResetRequest: 'admin_totp_reset.request',
+  /** Approve or reject a second-factor reset (the checker half). */
+  AdminTotpResetApprove: 'admin_totp_reset.approve',
 } as const;
 
 export type AdminPermissionName = (typeof AdminPermission)[keyof typeof AdminPermission];
@@ -39,16 +43,26 @@ export type AdminPermissionName = (typeof AdminPermission)[keyof typeof AdminPer
  */
 export const SEGREGATED_PERMISSION_PAIRS: ReadonlyArray<
   readonly [AdminPermissionName, AdminPermissionName]
-> = [[AdminPermission.AdminFundingRequest, AdminPermission.AdminFundingApprove]];
+> = [
+  [AdminPermission.AdminFundingRequest, AdminPermission.AdminFundingApprove],
+  [AdminPermission.AdminTotpResetRequest, AdminPermission.AdminTotpResetApprove],
+];
 
 /**
  * The role → permission matrix. One role per admin in Phase 1.
  *
- * Note that `super_admin` holds every permission **except**
- * `admin_funding.request`: it is the checker for admin funding and therefore
- * must not be able to be the maker. That is deliberate and is what keeps the
- * segregation-of-duties invariant above true; the runtime `checkerId != makerId`
- * check in the pending-action service is the secondary defence.
+ * Note that `super_admin` holds every permission **except** the two maker halves,
+ * `admin_funding.request` and `admin_totp_reset.request`: it is the checker for
+ * both, and therefore must not be able to be the maker. That is deliberate and is
+ * what keeps the segregation-of-duties invariant above true; the runtime
+ * `checkerId != makerId` check in the pending-action service is the secondary
+ * defence.
+ *
+ * A second-factor reset is a deliberately narrower capability than funding: only
+ * `compliance_officer` may raise one, where `support_agent` may also raise a
+ * funding request. Funding credits a customer; resetting a factor hands an
+ * operator's back-office identity to whoever next enrols on it, so the maker half
+ * belongs with the most senior non-root role rather than with front-line support.
  */
 export const PERMISSIONS_BY_ROLE: Readonly<Record<AdminRole, readonly AdminPermissionName[]>> = {
   super_admin: [
@@ -58,6 +72,7 @@ export const PERMISSIONS_BY_ROLE: Readonly<Record<AdminRole, readonly AdminPermi
     AdminPermission.AuditRead,
     AdminPermission.PendingActionsRead,
     AdminPermission.AdminFundingApprove,
+    AdminPermission.AdminTotpResetApprove,
     AdminPermission.AdminsManage,
   ],
   compliance_officer: [
@@ -67,6 +82,7 @@ export const PERMISSIONS_BY_ROLE: Readonly<Record<AdminRole, readonly AdminPermi
     AdminPermission.AuditRead,
     AdminPermission.PendingActionsRead,
     AdminPermission.AdminFundingRequest,
+    AdminPermission.AdminTotpResetRequest,
   ],
   fraud_analyst: [
     AdminPermission.CustomersRead,

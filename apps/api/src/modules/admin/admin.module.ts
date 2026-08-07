@@ -140,9 +140,18 @@ function adminIdentityConfigFromEnv(env: Env): AdminIdentityConfig {
         audit: AuditService,
         wallets: WalletResolver,
         funding: FundingService,
+        identity: AdminIdentityService,
       ): PendingAdminActionService =>
-        new PendingAdminActionService(db, ids, clock, audit, wallets, funding),
-      inject: [DRIZZLE, ID_GENERATOR, CLOCK, AuditService, WalletResolver, FundingService],
+        new PendingAdminActionService(db, ids, clock, audit, wallets, funding, identity),
+      inject: [
+        DRIZZLE,
+        ID_GENERATOR,
+        CLOCK,
+        AuditService,
+        WalletResolver,
+        FundingService,
+        AdminIdentityService,
+      ],
     },
     {
       provide: AdminSweeper,

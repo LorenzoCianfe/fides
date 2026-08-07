@@ -8,6 +8,8 @@ import {
   AdminLoginRequestSchema,
   AdminMfaEnrolRequestSchema,
   AdminMfaVerifyRequestSchema,
+  AdminPasswordChangeRequestSchema,
+  AdminTotpResetRequestSchema,
   AdminUserIdParamsSchema,
   AuditQuerySchema,
   PaginationQuerySchema,
@@ -27,6 +29,10 @@ export class AdminLoginRequestDto extends createZodDto(AdminLoginRequestSchema) 
 export class AdminMfaEnrolRequestDto extends createZodDto(AdminMfaEnrolRequestSchema) {}
 
 export class AdminMfaVerifyRequestDto extends createZodDto(AdminMfaVerifyRequestSchema) {}
+
+export class AdminPasswordChangeRequestDto extends createZodDto(AdminPasswordChangeRequestSchema) {}
+
+export class AdminTotpResetRequestDto extends createZodDto(AdminTotpResetRequestSchema) {}
 
 export class AdminCreateRequestDto extends createZodDto(AdminCreateRequestSchema) {}
 

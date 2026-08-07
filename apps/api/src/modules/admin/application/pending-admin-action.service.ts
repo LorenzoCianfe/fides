@@ -14,18 +14,28 @@ import { AuditAction, AuditResource } from '../../audit/application/audit-action
 import { AuditService } from '../../audit/application/audit.service';
 import { FundingService } from '../../payments/application/funding.service';
 import {
+  admins,
   pendingAdminActions,
   type PendingAdminActionRow,
   type PendingAdminActionStatus,
 } from '../infra/admin.schema';
+import { AdminIdentityService } from './admin-identity.service';
 import type { AdminPrincipal } from './admin-session.service';
 
 /**
- * The only action type registered in Phase 1 (ADR-0025). The table is generic
- * so the Phase 2/3 high-risk actions — suspension, reversal, limit override —
- * join it without a schema change.
+ * The first registered action type (ADR-0025). The table is generic so the
+ * Phase 2/3 high-risk actions — suspension, reversal, limit override — join it
+ * without a schema change.
  */
 export const ADMIN_FUNDING_ACTION = 'admin_funding';
+
+/**
+ * The second registered type (ADR-0030): clearing another operator's second
+ * factor. A reset is a second-factor bypass by definition — whoever enrols next
+ * holds the account — so it is exactly the class of action four-eyes exists for,
+ * and it may never be unilateral.
+ */
+export const ADMIN_TOTP_RESET_ACTION = 'admin_totp_reset';
 
 /** How long a request stays approvable before it must be raised again. */
 export const PENDING_ACTION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -41,11 +51,22 @@ export interface AdminFundingPayload {
   readonly reason: string;
 }
 
+/** The validated payload of an `admin_totp_reset` request. */
+export interface AdminTotpResetPayload {
+  /** The operator whose second factor would be cleared. */
+  readonly targetAdminId: string;
+  /** Captured at request time so the checker sees whom they are approving. */
+  readonly targetEmail: string;
+  readonly reason: string;
+}
+
+export type PendingActionPayload = AdminFundingPayload | AdminTotpResetPayload;
+
 export interface PendingActionView {
   readonly id: string;
   readonly type: string;
   readonly status: PendingAdminActionStatus;
-  readonly payload: AdminFundingPayload;
+  readonly payload: PendingActionPayload;
   readonly makerId: string;
   readonly makerReason: string | null;
   readonly checkerId: string | null;
@@ -70,25 +91,44 @@ export interface RequestFundingInput {
   readonly reason: string;
 }
 
+export interface RequestTotpResetInput {
+  readonly targetAdminId: string;
+  readonly reason: string;
+}
+
 export interface ApproveResult {
   readonly action: PendingActionView;
   /** The journal entry the approval posted. */
   readonly fundingId: string;
 }
 
+export interface TotpResetApprovalResult {
+  readonly action: PendingActionView;
+  /** How many of the target's live sessions the reset cut off. */
+  readonly revokedSessions: number;
+}
+
 /**
- * The four-eyes (maker-checker) workflow (ADR-0011, ADR-0025).
+ * The four-eyes (maker-checker) workflow (ADR-0011, ADR-0025, ADR-0030).
  *
  * A maker files a request; a different admin, holding the checker permission,
  * approves or rejects it. Segregation of duties is enforced three times over:
- * structurally in the permission matrix (no role holds both halves), here at
- * runtime (`checkerId != makerId`), and by a database CHECK constraint.
+ * structurally in the permission matrix (no role holds both halves of either
+ * pair), here at runtime (`checkerId != makerId`), and by a database CHECK
+ * constraint.
  *
  * Approval executes the action **inside the transaction that transitions the
- * row out of `pending`** — the row is locked, checked, and updated within the
- * posting transaction via the funding service's `onAuthorize` hook, so a
- * concurrent double-approval cannot post twice and a failed posting leaves the
- * request pending rather than approved-but-unexecuted.
+ * row out of `pending`** — the row is locked, checked, and updated within that
+ * transaction, so a concurrent double-approval cannot execute twice and a failed
+ * execution leaves the request pending rather than approved-but-unexecuted. For
+ * funding that transaction belongs to the posting service and is entered through
+ * its `onAuthorize` hook; for a factor reset there is no money to post, so this
+ * service owns the transaction directly.
+ *
+ * Two types are registered. Each is decided through its own route carrying its
+ * own permission, and every decision asserts the row's type — so a checker
+ * holding one type's approve half cannot decide the other's request by pointing
+ * at its id.
  */
 export class PendingAdminActionService {
   constructor(
@@ -98,6 +138,7 @@ export class PendingAdminActionService {
     private readonly audit: AuditService,
     private readonly wallets: WalletResolver,
     private readonly funding: FundingService,
+    private readonly identity: AdminIdentityService,
     private readonly ttlMs: number = PENDING_ACTION_TTL_MS,
   ) {}
 
@@ -166,6 +207,146 @@ export class PendingAdminActionService {
   }
 
   /**
+   * The maker half of a second-factor reset (ADR-0030). Records the intent
+   * against a target that exists; nothing about the target's credentials changes
+   * until a different admin approves.
+   */
+  async requestTotpReset(
+    admin: AdminPrincipal,
+    input: RequestTotpResetInput,
+    correlationId?: string,
+  ): Promise<PendingActionView> {
+    const reason = input.reason.trim();
+    if (reason.length === 0) {
+      throw new ValidationError('A reason is required for a second-factor reset request');
+    }
+
+    const [target] = await this.db
+      .select({ id: admins.id, email: admins.email })
+      .from(admins)
+      .where(eq(admins.id, input.targetAdminId))
+      .limit(1);
+    if (!target) throw new NotFoundError('Admin not found', { adminId: input.targetAdminId });
+
+    const now = this.clock.now();
+    const payload: AdminTotpResetPayload = {
+      targetAdminId: target.id,
+      targetEmail: target.email,
+      reason,
+    };
+    const id = this.ids.next();
+
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(pendingAdminActions)
+        .values({
+          id,
+          type: ADMIN_TOTP_RESET_ACTION,
+          status: 'pending',
+          payload,
+          makerId: admin.adminId,
+          makerReason: payload.reason,
+          expiresAt: new Date(now.getTime() + this.ttlMs),
+          correlationId: correlationId ?? null,
+          createdAt: now,
+        })
+        .returning();
+
+      await this.audit.append(tx, {
+        actorType: 'admin',
+        actorId: admin.adminId,
+        action: AuditAction.AdminTotpResetRequested,
+        resourceType: AuditResource.PendingAdminAction,
+        resourceId: id,
+        after: { status: 'pending', targetAdminId: payload.targetAdminId },
+        correlationId: correlationId ?? null,
+      });
+
+      return this.toView(row!, now);
+    });
+  }
+
+  /**
+   * The checker half of a second-factor reset. Clears the target's factor inside
+   * the same transaction that decides the request, under the row lock, so a
+   * concurrent double-approval cannot reset twice and a failed reset leaves the
+   * request pending.
+   *
+   * Unlike funding this carries no `Idempotency-Key`: there is no ledger posting
+   * to replay, and a retry after a lost response gets a 400 naming the status,
+   * from which the checker can see the reset already succeeded.
+   */
+  async approveTotpReset(
+    admin: AdminPrincipal,
+    actionId: string,
+    options: { readonly decisionReason?: string; readonly correlationId?: string } = {},
+  ): Promise<TotpResetApprovalResult> {
+    const now = this.clock.now();
+    return this.db.transaction(async (tx) => {
+      const [locked] = await tx
+        .select()
+        .from(pendingAdminActions)
+        .where(eq(pendingAdminActions.id, actionId))
+        .limit(1)
+        .for('update');
+      if (!locked) throw new NotFoundError('Pending action not found', { actionId });
+      this.assertApprovable(locked, admin, now, ADMIN_TOTP_RESET_ACTION);
+
+      const payload = locked.payload as AdminTotpResetPayload;
+      // The invariant this action adds to four-eyes. `checkerId != makerId` stops
+      // one operator doing both halves; it says nothing about the *target*, and
+      // approving a reset of your own factor is a unilateral second-factor
+      // bypass — the precise outcome the control exists to prevent.
+      if (payload.targetAdminId === admin.adminId) {
+        throw new AuthorizationError('An admin cannot approve a reset of their own second factor', {
+          actionId,
+        });
+      }
+
+      const { revokedSessions } = await this.identity.resetTotp(
+        tx,
+        {
+          targetAdminId: payload.targetAdminId,
+          actorId: admin.adminId,
+          ...(options.correlationId !== undefined ? { correlationId: options.correlationId } : {}),
+        },
+        now,
+      );
+
+      const [row] = await tx
+        .update(pendingAdminActions)
+        .set({
+          status: 'approved',
+          checkerId: admin.adminId,
+          decisionReason: options.decisionReason ?? null,
+          decidedAt: now,
+          resultRef: payload.targetAdminId,
+        })
+        .where(eq(pendingAdminActions.id, actionId))
+        .returning();
+
+      await this.audit.append(tx, {
+        actorType: 'admin',
+        actorId: admin.adminId,
+        action: AuditAction.AdminTotpResetApproved,
+        resourceType: AuditResource.PendingAdminAction,
+        resourceId: actionId,
+        before: { status: 'pending' },
+        after: {
+          status: 'approved',
+          makerId: locked.makerId,
+          checkerId: admin.adminId,
+          targetAdminId: payload.targetAdminId,
+          revokedSessions: revokedSessions.toString(),
+        },
+        correlationId: options.correlationId ?? null,
+      });
+
+      return { action: this.toView(row!, now), revokedSessions };
+    });
+  }
+
+  /**
    * The checker half. Posts the funding and transitions the request in one
    * transaction; the authorization checks run under a row lock inside it, so
    * they are decided against the state the posting actually commits against.
@@ -203,7 +384,7 @@ export class PendingAdminActionService {
           .limit(1)
           .for('update');
         if (!locked) throw new NotFoundError('Pending action not found', { actionId });
-        this.assertApprovable(locked, admin, now);
+        this.assertApprovable(locked, admin, now, ADMIN_FUNDING_ACTION);
 
         await tx
           .update(pendingAdminActions)
@@ -242,10 +423,15 @@ export class PendingAdminActionService {
     };
   }
 
-  /** Reject a pending request. Moves no money and cannot be undone. */
+  /**
+   * Reject a pending request of a given type. Executes nothing and cannot be
+   * undone. Type-scoped for the same reason approval is: the route that reached
+   * here carries one type's checker permission.
+   */
   async reject(
     admin: AdminPrincipal,
     actionId: string,
+    expectedType: string,
     options: { readonly decisionReason?: string; readonly correlationId?: string } = {},
   ): Promise<PendingActionView> {
     const now = this.clock.now();
@@ -257,6 +443,12 @@ export class PendingAdminActionService {
         .limit(1)
         .for('update');
       if (!locked) throw new NotFoundError('Pending action not found', { actionId });
+      if (locked.type !== expectedType) {
+        throw new ValidationError('This request is not of the expected type', {
+          type: locked.type,
+          expected: expectedType,
+        });
+      }
       if (locked.status !== 'pending') {
         throw new ValidationError('This request has already been decided', {
           status: locked.status,
@@ -277,7 +469,10 @@ export class PendingAdminActionService {
       await this.audit.append(tx, {
         actorType: 'admin',
         actorId: admin.adminId,
-        action: AuditAction.AdminFundingRejected,
+        action:
+          expectedType === ADMIN_TOTP_RESET_ACTION
+            ? AuditAction.AdminTotpResetRejected
+            : AuditAction.AdminFundingRejected,
         resourceType: AuditResource.PendingAdminAction,
         resourceId: actionId,
         before: { status: 'pending' },
@@ -351,10 +546,17 @@ export class PendingAdminActionService {
   private assertApprovable(
     row: PendingAdminActionRow,
     admin: AdminPrincipal,
-    now: Date = this.clock.now(),
+    now: Date,
+    expectedType: string,
   ): void {
-    if (row.type !== ADMIN_FUNDING_ACTION) {
-      throw new ValidationError('Unsupported pending action type', { type: row.type });
+    // The route that reached here carries one type's approve permission, so a
+    // row of another type must not be decidable through it — otherwise holding
+    // either checker half would be enough to decide both kinds of request.
+    if (row.type !== expectedType) {
+      throw new ValidationError('This request is not of the expected type', {
+        type: row.type,
+        expected: expectedType,
+      });
     }
     if (row.status !== 'pending') {
       throw new ValidationError('This request has already been decided', { status: row.status });
@@ -374,7 +576,7 @@ export class PendingAdminActionService {
       id: row.id,
       type: row.type,
       status: row.status,
-      payload: row.payload as AdminFundingPayload,
+      payload: row.payload as PendingActionPayload,
       makerId: row.makerId,
       makerReason: row.makerReason,
       checkerId: row.checkerId,

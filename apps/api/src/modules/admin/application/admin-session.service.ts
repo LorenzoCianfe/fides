@@ -1,5 +1,5 @@
 import { AuthenticationError, type EventClock, type IdGenerator } from '@fides/domain';
-import { and, eq, isNull, lt } from 'drizzle-orm';
+import { and, eq, isNull, lt, ne } from 'drizzle-orm';
 import type { Database, DbExecutor } from '../../../database/db.types';
 import { generateToken, sha256Hex } from '../../../shared/crypto/secrets';
 import { AuditAction, AuditResource } from '../../audit/application/audit-actions';
@@ -191,6 +191,61 @@ export class AdminSessionService {
         correlationId: options.correlationId ?? null,
       });
     });
+  }
+
+  /**
+   * Revoke every live session an admin holds, optionally sparing one (ADR-0030).
+   *
+   * Takes the caller's executor because both callers need it to commit with the
+   * credential change that motivated it: a password rotation whose old sessions
+   * survive, or a second-factor reset whose old sessions survive, would leave
+   * the very access the change was meant to cut off.
+   *
+   * `exceptSessionId` spares the caller's own session on a self-service change,
+   * so routine rotation does not sign the operator out of the request they are
+   * making. A reset performed *on* an admin spares nothing.
+   *
+   * Returns how many were revoked, and audits each one individually — the
+   * resource of a revocation is the session, and collapsing them would lose
+   * which sessions actually existed at the time.
+   */
+  async revokeAllForAdmin(
+    executor: DbExecutor,
+    adminId: string,
+    options: {
+      readonly exceptSessionId?: string;
+      readonly reason: string;
+      readonly correlationId?: string;
+      /** Whose act this was; the target admin when they revoked their own. */
+      readonly actorId?: string;
+    },
+  ): Promise<number> {
+    const now = this.clock.now();
+    const conditions = [eq(adminSessions.adminId, adminId), isNull(adminSessions.revokedAt)];
+    if (options.exceptSessionId !== undefined) {
+      conditions.push(ne(adminSessions.id, options.exceptSessionId));
+    }
+
+    const revoked = await executor
+      .update(adminSessions)
+      .set({ revokedAt: now, revokedReason: options.reason })
+      .where(and(...conditions))
+      .returning({ id: adminSessions.id });
+
+    for (const session of revoked) {
+      await this.audit.append(executor, {
+        actorType: 'admin',
+        actorId: options.actorId ?? adminId,
+        action: AuditAction.AdminSessionRevoked,
+        resourceType: AuditResource.AdminSession,
+        resourceId: session.id,
+        before: { revoked: false },
+        after: { revoked: true, reason: options.reason, adminId },
+        correlationId: options.correlationId ?? null,
+      });
+    }
+
+    return revoked.length;
   }
 
   private cappedDeadline(now: Date, ttlMs: number, absolute: Date): Date {
